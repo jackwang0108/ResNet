@@ -95,6 +95,7 @@ class FullTrainer:
 
         maximum_acc: float = 0
         early_stop_cnt: int = 0
+        decrease_time = 5
 
         x: torch.Tensor
         y: torch.Tensor
@@ -172,10 +173,12 @@ class FullTrainer:
                 early_stop_cnt += 1
 
             # decrease lr
-            if early_stop_cnt >= plateau:
+            if early_stop_cnt >= plateau and decrease_time >= 0:
                 tbar.write(f"{Fore.CYAN}Decreased learning rate")
                 for g in self.optim.param_groups:
                     g["lr"] /= 10
+                early_stop_cnt = 0
+                decrease_time -= 1
 
             if early_stop_cnt >= early_stop:
                 tbar.write(f"{Fore.CYAN}Early Stop!")
