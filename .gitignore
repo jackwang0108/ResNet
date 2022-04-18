@@ -1,5 +1,3 @@
 .idea
 logs/
-runs/
-checkpoints/
 __pycache__
