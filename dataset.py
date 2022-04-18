@@ -35,10 +35,9 @@ class Cifar100(data.Dataset):
         image, label = self.visible_image[index], self.visible_label[index]
         return image, label
 
-    def set_visible_class(self, visible_class: Union[int, str, List[int], List[str]]):
+    def set_visible_class(self, visible_class: Union[int, str, List[int], List[str]]) -> None:
         """
         set_visible_class will set visible images of given classes
-
         Args:
             visible_class (Union[int, str, List[int], List[str]]): visiable class
         """
@@ -62,6 +61,15 @@ class Cifar100(data.Dataset):
         self.visible_image, self.visible_label = self._image[visible_class_idx], self._label[visible_class_idx]
 
     def load(self, train_val_ratio: float, refresh: bool) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, np.ndarray]]:
+        """
+        load original cifar100 data
+        Args:
+            train_val_ratio (float): ratio of training example / validation examples. For example, train_val_ratio=0.1 will
+                set 450 training examples and 50 validation examples.
+            refresh (bool): Wheter to regenerate training/validation example index.
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, Dict[int, np.ndarray]]: image and label. labels are {class_idx: example_idx}
+        """
         # same as normal classification
         if self.split == "test":
             with DatasetPath.Cifar100.test.open(mode="rb") as f:
@@ -123,43 +131,10 @@ class Cifar100(data.Dataset):
         return image, label, class2idx
 
     @staticmethod
-    def collate_fn(x: Tuple[torch.Tensor], y: Tuple[torch.Tensor]):
+    def collate_fn(x: Tuple[torch.Tensor], y: Tuple[torch.Tensor]) -> None:
         raise NotImplementedError
 
 
-class ExamplarSets(data.Dataset):
-    def __init__(self, K: int) -> None:
-        super().__init__()
-        self.maximum_size: int = K
-        # {class: (example_x, example_y)}
-        self.examplar_set: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
-
-        # temp batchs
-        self._temp_batchs: Dict[str, List[torch.Tensor]] = {"image": [], "label": []}
-
-        self.new_image: torch.Tensor = torch.zeros(0)
-        self.new_label: torch.Tensor = torch.zeros(0)
-
-    def __len__(self):
-        return
-
-    def __getitem__(self, index: Any) -> Tuple[torch.Tensor, torch.Tensor]:
-        return super().__getitem__(index)
-
-    def add_batch(self, batch_x: torch.Tensor, batch_y: torch.Tensor):
-        self._temp_batchs["images"].append(batch_x.clone().detach().cpu())
-        self._temp_batchs["label"].append(batch_y.clone().detach().cpu())
-
-    def combine(self):
-        self.new_image = torch.concat(self._temp_batchs["images"], dim=0)
-        self.new_label = torch.concat(self._temp_batchs["label"], dim=0)
-
-    @torch.no_grad()
-    def construct_examplar_set(self):
-        pass
-
-    def reduce_examplar_set(self):
-        pass
 
 
 if __name__ == "__main__":

@@ -86,7 +86,18 @@ cifar100_num2label = dict(zip(cifar100_label2num.values(), cifar100_label2num.ke
 
 # 多分类评价指标从confusion matrix中计算参考: https://zhuanlan.zhihu.com/p/147663370
 class ClassificationEvaluator:
+    """
+    ClassificationEvaluator will automatically record each batch, calculate confusion matrix and give classification
+    evaluations of top 1 or top 5.
+    """
+
     def __init__(self, num_class: int) -> None:
+        """
+        init the evaluator
+
+        Args:
+            num_class (int): number of all prediction classes
+        """
         self._num_class = num_class
         # rows: ground truth class, cols: predicted class
         self.top1_confusion_matrix = np.zeros(shape=(num_class, num_class))
@@ -99,20 +110,31 @@ class ClassificationEvaluator:
             "recall": self.recall
         }
 
-    def add_batch_top1(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]):
+    def add_batch_top1(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
         """
-        batch_confusion_matrix is used to compute the confusion matrix of a batch
+        add_batch_top1 is used to record the confusion matrix of a batch to calculate top 5 evaluations
+
         Args:
-            labels: Prediction labels of points with shape of [batch]
-            num_classes: Ground truth labels of points with shape of [batch] or [batch, ]
+            y_pred (Union[torch.Tensor, np.ndarray]): predictions made by the network, should be [batch, class_score]
+            y (Union[torch.Tensor, np.ndarray]): ground truth label, should be [batch]
+
         Returns:
-            confusion matrix, represented by a tensor of [batch, num_classes, num_classes]
+            np.ndarray: top 1 aconfusion matrix of the given batch
+
+        Examples:
+            >>> x, y = next(iter(dataloader))
+            >>> y_pred = network(x)
+            >>> ce = ClassificationEvaluator(num_class=100)
+            >>> ce.add_batch_top1(y_pred)
+            >>> # equals to
+            >>> ce.add_batch_top1(y_pred.argmax(dim=1))
         """
         # check type
         assert isinstance(y_pred, (torch.Tensor, np.ndarray)), f"Not suppported type for pred_y: {type(y_pred)}"
         assert isinstance(y, (torch.Tensor, np.ndarray)), f"Not suppported type for y: {type(y)}"
         # check length
-        assert (a:=len(y_pred)) == (b:=len(y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
+        assert (a := len(y_pred)) == (b := len(
+            y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
         y_pred = y_pred if isinstance(y_pred, np.ndarray) else y_pred.detach().to(device="cpu").numpy()
         y = y if isinstance(y, np.ndarray) else y.detach().to(device="cpu").numpy()
 
@@ -131,20 +153,31 @@ class ClassificationEvaluator:
         self.top1_confusion_matrix += confusion_matrix
         return confusion_matrix
 
-    def add_batch_top5(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]):
-        """
-        batch_confusion_matrix is used to compute the confusion matrix of a batch
+    def add_batch_top5(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
+        """ 
+        add_batch_top5 is used to record the confusion matrix of a batch to calculate the top 1 evaluations
+
         Args:
-            labels: Prediction labels of points with shape of [batch]
-            num_classes: Ground truth labels of points with shape of [batch] or [batch, ]
+            y_pred (Union[torch.Tensor, np.ndarray]): prediction made by the network, should be [batch, class_score]
+            y (Union[torch.Tensor, np.ndarray]): ground truth label, should be [batch]
+
         Returns:
-            confusion matrix, represented by a tensor of [batch, num_classes, num_classes]
+            np.ndarray: top 1 confusion matrix of the given batch
+
+        Examples:
+            >>> x, y = next(iter(dataloader))
+            >>> y_pred = network(x)
+            >>> ce = ClassificationEvaluator(num_class=100)
+            >>> ce.add_batch_top5(y_pred)
+            >>> # the following will cause error
+            >>> ce.add_batch_top5(y_pred.argmax(dim=1))
         """
         # check type
         assert isinstance(y_pred, (torch.Tensor, np.ndarray)), f"Not suppported type for pred_y: {type(y_pred)}"
         assert isinstance(y, (torch.Tensor, np.ndarray)), f"Not suppported type for y: {type(y)}"
         # check length
-        assert (a:=len(y_pred)) == (b:=len(y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
+        assert (a := len(y_pred)) == (b := len(
+            y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
         # check input
         assert y_pred.ndim == 2, f"For top5 evaluation, you should input [batch, class_score] tensor or ndarray, but you offered: {y_pred.shape}"
         y_pred = y_pred if isinstance(y_pred, np.ndarray) else y_pred.detach().to(device="cpu").numpy()
@@ -170,19 +203,47 @@ class ClassificationEvaluator:
         ).reshape(self._num_class, self._num_class)
         self.top5_confusion_matrix += confusion_matrix
         return confusion_matrix
-    
-    def accuracy(self, top: int = 5) -> np.float64:
 
+    def accuracy(self, top: int = 5) -> np.float64:
+        """
+        accuracy calculate overall accuracy after an epoch
+
+        Args:
+            top (int, optional): Top k accuracy to calculate. Defaults to 5.
+
+        Returns:
+            np.float64: overall acuracy
+
+        Examples:
+            >>> mean_acc = ce.accuracy(top=1)
+            >>> mean_acc
+            0.8234321212
+            >>> mean_acc = ce.accuracy(top=5)
+            >>> mean_acc
+            0.9312321245
+        """
         assert top in [1, 5], f"Only support for top1 and top5"
-        confusion_matrix: np.ndarray =  self.__getattribute__(f"top{top}_confusion_matrix")
+        confusion_matrix: np.ndarray = self.__getattribute__(f"top{top}_confusion_matrix")
 
         acc: np.ndarray = confusion_matrix.trace() / confusion_matrix.sum()
         return acc
 
     def precision(self, top: int = 5) -> Tuple[np.ndarray, np.float64]:
+        """
+        precision calculate per-class/mean precision after an epoch
 
+        Args:
+            top (int, optional): Top k precision to calculate. Defaults to 5.
+
+        Returns:
+            Tuple[np.ndarray, np.float64]: precisions of each class (np.ndarray) and mean precision (np.float64)
+
+        Examples:
+            >>> per_class_precision, mean_precision = ce.precision(top=1)
+            >>> per_class_precision, mean_precision = ce.precision(top=5)
+        """
         assert top in [1, 5], f"Only support for top1 and top5"
-        confusion_matrix: np.ndarray =  self.__getattribute__(f"top{top}_confusion_matrix")
+        confusion_matrix: np.ndarray = self.__getattribute__(f"top{top}_confusion_matrix")
 
         # ignore zero division error, invalid division warning
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -191,9 +252,22 @@ class ClassificationEvaluator:
         mean_precision = per_class_precision.mean()
         return per_class_precision, mean_precision
 
-    def recall(self, top: int = 5):
+    def recall(self, top: int = 5) -> Tuple[np.ndarray, np.float64]:
+        """
+        recall calculate per-class/mean recall after an epoch
+
+        Args:
+            top (int, optional): Top k recall to calculate. Defaults to 5.
+
+        Returns:
+            Tuple[np.ndarray, np.float64]: recall of each class (np.ndarray) and mean recall (np.float64)
+
+        Examples:
+            >>> per_class_recall, mean_recall = ce.precision(top=1)
+            >>> per_class_recall, mean_recall = ce.precision(top=5)
+        """
         assert top in [1, 5], f"Only support for top1 and top5"
-        confusion_matrix: np.ndarray =  self.__getattribute__(f"top{top}_confusion_matrix")
+        confusion_matrix: np.ndarray = self.__getattribute__(f"top{top}_confusion_matrix")
 
         # ignore zero division error, invalid division warning
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -201,13 +275,43 @@ class ClassificationEvaluator:
             per_class_recall[np.isnan(per_class_recall)] = 0
         mean_recall = per_class_recall.mean()
         return per_class_recall, mean_recall
-    
-    def new_epoch(self):
+
+    def new_epoch(self) -> None:
+        """
+        new_epoch refresh all tracked batches, should be called in a new epoch
+
+        Returns:
+            None
+
+        Examples:
+            >>> for epoch in range(n_epoch):
+            >>>     ce.new_epoch()
+            >>>     # train
+            >>>     for x, y in train_loader:
+            >>>         # pass
+            >>>         ce.add_batch_top1(...)
+            >>>         ce.add_batch_top5(...)
+        """
         self.top1_confusion_matrix = np.zeros(shape=(self._num_class, self._num_class))
         self.top5_confusion_matrix = np.zeros(shape=(self._num_class, self._num_class))
-    
-    def make_grid(self, title: str, labels: List[str], top: int = 5):
-        assert len(labels) == self._num_class, f"Evaluator is initialized with {self._num_class} classes, but reveive only {len(labels)} labels."
+
+    def make_grid(self, title: str, labels: List[str], top: int = 5) -> str:
+        """
+        make_grid generate evaluation table after an epoch
+
+        Args:
+            title (str): title of the table
+            labels (List[str]): all labels
+            top (int, optional): select top k evaluations. Defaults to 5.
+
+        Returns:
+            str: generated table
+
+        Examples:
+            >>> print(ce.make_grid())
+        """
+        assert len(
+            labels) == self._num_class, f"Evaluator is initialized with {self._num_class} classes, but reveive only {len(labels)} labels."
         data = []
         index = []
         column = labels + ["Mean"]
@@ -217,7 +321,7 @@ class ClassificationEvaluator:
             result = meansure(top=top)
             if isinstance(result, tuple):
                 a = np.random.randn(10, 10)
-                np.round(a,)
+                np.round(a, )
                 data.append(np.round(result[0], decimals=4))
                 last_col.append(np.round(result[1], decimals=4))
             else:
@@ -238,11 +342,10 @@ class ClassificationEvaluator:
         return table.table
 
 
-
 def visualize(image: Union[torch.Tensor, np.ndarray],
               cls: Union[None, int, str, torch.Tensor, np.ndarray] = None) -> np.ndarray:
     """
-    visualize will visualize given image(s) and return a grid of all given image(s) with label(s) (if provided)
+    visualize given image(s) and return a grid of all given image(s) with label(s) (if provided)
 
     Args:
         image (Union[torch.Tensor, np.ndarray]): images to display, should be in the shape of [channel, width, height] or [batch, channel, width, height]
@@ -250,6 +353,10 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
 
     Returns:
         np.ndarray: rendered iamges ([height, width, channel]), can be display by PIL or matplotlib
+
+    Examples:
+        >>> x, y = next(iter(train_loader))
+        >>> visualize(image=x, cls=y)
     """
     num = 1 if image.ndim == 3 else image.shape[0]
     cls = np.array([""] * num) if cls is None else cls
@@ -302,7 +409,21 @@ def visualize(image: Union[torch.Tensor, np.ndarray],
     return np.frombuffer(canvas.tostring_rgb(), dtype='uint8').reshape(fig.canvas.get_width_height()[::-1] + (3,))
 
 
-def legal_converter(path: Path):
+def legal_converter(path: Path) -> Path:
+    """
+    legal_converter convert path to legal path in different os
+
+    Args:
+        path (Path): path to convert
+
+    Returns:
+        path: legal path
+
+    Examples:
+        >>> p = Path("1:2:3.1.2.3")
+        >>> legal_converter(p)
+        1_2_3.1.2.3
+    """
     global system
     if system == "Windows":
         illegal_char = ["<", ">", ":", "\"", "'", "/", "\\", "|", "?", "*"]

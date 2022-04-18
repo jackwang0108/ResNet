@@ -29,6 +29,13 @@ class FullTrainer:
     default_dtype = torch.float
 
     def __init__(self, network: nn.Module, dry_run: bool=True):
+        """
+        __init__ the trainer of ResNet
+
+        Args:
+            network (nn.Module): ResNet instance, should be subclass of _ResNetBas
+            dry_run (bool, optional): if true, no checkpoints or run files will be generate. Defaults to True.
+        """
         # network modules
         self.network = network.to(dtype=self.default_dtype, device=self.available_device)
         self.loss_func = nn.CrossEntropyLoss()
@@ -62,7 +69,19 @@ class FullTrainer:
         if not self.dry_run:
             self.writer.close()
 
-    def train(self, n_epoch: int, early_stop: int = 200, plateau: int = 50, show_grid: bool = True):
+    def train(self, n_epoch: int, early_stop: int = 200, plateau: int = 30, show_grid: bool = True) -> nn.Module:
+        """
+        train the network
+
+        Args:
+            n_epoch (int): total epoch
+            early_stop (int, optional): early stop counts. Defaults to 200.
+            plateau (int, optional): number of epochs to decrease learning rate when accuracy reaches plateau. Defaults to 50.
+            show_grid (bool, optional): if print table in the terminal. Defaults to True.
+
+        Returns:
+            nn.Module: network with trained parameter
+        """
 
         # loaders
         train_loader = data.DataLoader(
@@ -154,7 +173,7 @@ class FullTrainer:
             if early_stop_cnt >= plateau:
                 tbar.write(f"{Fore.CYAN}Decreased learning rate")
                 for g in self.optim.param_groups:
-                    g["lshr"] /= 10
+                    g["lr"] /= 10
 
             if early_stop_cnt >= early_stop:
                 tbar.write(f"{Fore.CYAN}Early Stop!")
