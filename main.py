@@ -14,6 +14,8 @@ import tqdm
 import numpy as np
 from colorama import Fore, init
 
+init(autoreset=True)
+
 # my libraries
 from network import ResNet34
 from dataset import Cifar100
@@ -100,7 +102,7 @@ class FullTrainer:
         for epoch in (tbar := tqdm.trange(n_epoch)):
             ndigit = len(str(n_epoch))
             tbar.set_description(f"Epoch [{Fore.GREEN}{epoch:>{ndigit}d}{Fore.RESET}/{n_epoch:>{ndigit}d}]")
-            self.train_evaluator.new_epoch()
+
             self.val_evaluator.new_epoch()
             # train
             for step, (x, y) in enumerate(train_loader):

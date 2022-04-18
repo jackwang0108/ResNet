@@ -8,8 +8,6 @@ from typing import *
 # third-party libraries
 from colorama import Fore, init
 
-# my library
-from dataset import ExamplarSets
 
 init(autoreset=True)
 
