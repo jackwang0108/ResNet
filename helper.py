@@ -58,7 +58,7 @@ class DatasetPath:
         SegmentationClass: Path = base.joinpath("SegmentationClass")
         SegmentationObject: Path = base.joinpath("SegmentationObject")
 
-        train: PascaType
+        train: PascalType
         val: PascalType
 
         @classmethod
@@ -131,7 +131,7 @@ class ClassLabelLookuper:
                 meta = pickle.load(f)
             self.cls = meta["fine_label_names"]
         else:
-            self.cls = DatasetPath.PascalVOC2012.train_idx.keys()
+            self.cls = DatasetPath.PascalVOC2012.classification().train.keys()
 
         self._cls2label = dict(zip(self.cls, range(len(self.cls))))
         self._label2cls = dict(zip(range(len(self.cls)), self.cls))
@@ -378,7 +378,8 @@ def _visualize(image: ImageType, cls: Optional[ClassType] = None) -> None:
     n_col: int = math.ceil(num_image / n_row)
 
     ax: List[List[Axes]]
-    fig, ax = plt.subplots(nrows=n_row, ncols=n_col, layout="tight", figsize=(2 * n_row, 2 * n_col))
+    fig, ax = plt.subplots(nrows=n_row, ncols=n_col, figsize=(2 * n_row, 2 * n_col))
+    fig.tight_layout()
     if len(image_list) == 1:
         ax = [[ax]]
     elif n_row == 1:
