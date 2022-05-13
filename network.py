@@ -12,7 +12,7 @@ from colorama import Fore, init
 init(autoreset=True)
 
 
-class BasicResidualBlock(nn.Module):
+class _BasicResidualBlock(nn.Module):
     __name__ = "ResidualBlock"
 
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1,
@@ -28,7 +28,7 @@ class BasicResidualBlock(nn.Module):
             with_projection (Union[bool, None]): if use project in the shortcut connection, set to None will let the
                 model decide.
         """
-        super(BasicResidualBlock, self).__init__()
+        super(_BasicResidualBlock, self).__init__()
         # Residual path, bias is omitted (as said in original paper)
         self.residual_path = nn.Sequential(
             nn.Conv2d(
@@ -85,7 +85,7 @@ class BasicResidualBlock(nn.Module):
         return self.output_relu(hx)
 
 
-class BottleneckResidualBlock(nn.Module):
+class _BottleneckResidualBlock(nn.Module):
     __name__ = "ResidualBlock"
 
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1,
@@ -101,7 +101,7 @@ class BottleneckResidualBlock(nn.Module):
             with_projection (Union[bool, None]): if use project in the shortcut connection, set to None will let the
                 model decide.
         """
-        super(BottleneckResidualBlock, self).__init__()
+        super(_BottleneckResidualBlock, self).__init__()
         # Residual path, bias is omitted (as said in original paper)
         # using 2D convolution of 1*1 kernel to reduce parameters when process large input, ImageNet for example.
         self.residual_path = nn.Sequential(
@@ -171,15 +171,15 @@ class _ResNetBase(nn.Module):
     __name__ = "ResNetBase"
 
     # cifar like dataset, input images are small
-    cifar_like_dataset: List[str] = ["Cifar100", "cifar100"]
+    cifar_like_dataset: List[str] = ["Cifar10", "Cifar100"]
     # ImageNet like dataset, input images are large
-    imagenet_like_datasets: List[str] = ["tinyImageNet200"]
+    imagenet_like_datasets: List[str] = ["tinyImageNet200", "PascalVOC2012"]
 
     def __init__(self, target_dataset: str, num_blocks: List[int], num_class: Union[int, None] = None):
         if not target_dataset in (a := self.cifar_like_dataset + self.imagenet_like_datasets):
             raise NotImplementedError(f"Not implemented for dataset: {target_dataset}, currently available datasets are"
                                       f" {a}")
-        
+
         super(_ResNetBase, self).__init__()
 
         self.target_dataset: str = target_dataset
@@ -188,8 +188,10 @@ class _ResNetBase(nn.Module):
         # if you want to run on you onw dataset, you need to write the transformation layers
         if self.target_dataset in self.imagenet_like_datasets:
             self.transform = nn.Sequential(
-                nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(7, 7), stride=2),
-                nn.MaxPool2d(stride=2)
+                nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(7, 7), stride=2, bias=False),
+                nn.BatchNorm2d(num_features=64),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
             )
         elif self.target_dataset in self.cifar_like_dataset:
             self.transform = nn.Sequential(
@@ -199,7 +201,7 @@ class _ResNetBase(nn.Module):
             )
 
         # decide block type
-        block_type = BasicResidualBlock if target_dataset in self.cifar_like_dataset else BottleneckResidualBlock
+        block_type = _BasicResidualBlock if target_dataset in self.cifar_like_dataset else _BottleneckResidualBlock
 
         self.stage1 = self._make_stage(
             block_type=block_type,
@@ -251,13 +253,13 @@ class _ResNetBase(nn.Module):
             return self.fc(feature_map)
         return feature_map
 
-    def _make_stage(self, block_type: Union[BasicResidualBlock, BottleneckResidualBlock],
+    def _make_stage(self, block_type: Union[_BasicResidualBlock, _BottleneckResidualBlock],
                     in_channels: int, out_channels: int, num_blocks: int, first_stride: int) -> nn.Sequential:
         """
         _make_stage will make a stage. A stage means several basic/bottleneck residual blocks, in original paper, there
             are 4 stages.
         Args:
-            block_type (Union[BasicResidualBlock, BottleneckResidualBlock]): type of the block
+            block_type (Union[_BasicResidualBlock, _BottleneckResidualBlock]): type of the block
             in_channels (int): channel of input image of the stage
             out_channels (int): channel of output image of the stage
             num_blocks (int): number of blocks in this stage
@@ -269,7 +271,7 @@ class _ResNetBase(nn.Module):
         blocks = []
         for block_idx, stride in enumerate(block_strides):
             blocks.append(
-                BasicResidualBlock(in_channels=in_channels, out_channels=out_channels, stride=stride)
+                _BasicResidualBlock(in_channels=in_channels, out_channels=out_channels, stride=stride)
             )
             if block_idx == 0:
                 # only the first block will do downsample and expand channels
