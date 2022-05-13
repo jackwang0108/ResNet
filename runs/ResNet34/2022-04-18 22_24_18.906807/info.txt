@@ -1,2 +1,0 @@
-find decrease lr useless
-start normal training with fixed 1e-3 lr, momentum and wd keeps the same

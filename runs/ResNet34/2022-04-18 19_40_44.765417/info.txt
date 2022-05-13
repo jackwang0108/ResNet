@@ -1,1 +1,0 @@
-first train, there is still some bugs in the decrease learning rate
