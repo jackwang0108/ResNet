@@ -1,479 +1,422 @@
 # Standard Library
-import os
 import pickle
-import platform
 from typing import *
-from pathlib import PosixPath, WindowsPath, Path
+from pathlib import Path
+from dataclasses import dataclass
 
-# Third-party Library
-import PIL
+# Third-Party Library
 import torch
 import numpy as np
 import pandas as pd
+import PIL.Image as Image
 import matplotlib.pyplot as plt
-from colorama import Fore, init
-from terminaltables import SingleTable
-from matplotlib import figure, axes
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-# Select System
-system: str = platform.uname().system
 
-
-# Decide Path
-# Path: Union[PosixPath, WindowsPath]
-# if system == "Windows":
-#     Path = WindowsPath
-# elif system == "Linux":
-#     Path = PosixPath
-# else:
-#     raise NotImplementedError
-
-
+@dataclass
 class ProjectPath:
     base: Path = Path(__file__).resolve().parent
-    logs: Path = base.joinpath("logs")
-    datasets: Path = base.joinpath("datasets")
     runs: Path = base.joinpath("runs")
+    log: Path = base.joinpath("logs")
+    config: Path = base.joinpath("config")
+    dataset: Path = base.joinpath("dataset")
     checkpoints: Path = base.joinpath("checkpoints")
 
-
-for attr in ProjectPath.__dict__.values():
-    if isinstance(attr, Path):
-        attr.mkdir(parents=True, exist_ok=True)
+    def __init__(self) -> None:
+        for project_path in ProjectPath.__dict__.values():
+            if isinstance(project_path, Path):
+                project_path.mkdir(parents=True, exist_ok=True)
 
 
 class DatasetPath:
+    base: Path = ProjectPath.dataset
+
+    class Cifar10:
+        base: Path = ProjectPath.base.joinpath("dataset/cifar-10")
+        meta: Path = base.joinpath("batches.meta")
+        test: Path = base.joinpath("test_batch")
+        train: List[Path] = list(base.glob("data*"))
+
     class Cifar100:
-        global system
-        base: Path
-        if system == "Windows":
-            base = ProjectPath.datasets.joinpath("cifar100-windows")
-        elif system == "Linux":
-            base = ProjectPath.datasets.joinpath("cifar100-linux")
+        base: Path = ProjectPath.base.joinpath("dataset/cifar-100")
         meta: Path = base.joinpath("meta")
         test: Path = base.joinpath("test")
         train: Path = base.joinpath("train")
 
-    class tinyImageNet:
-        global system
-        base: Path
-        if system == "Windows":
-            base = ProjectPath.datasets.joinpath("tinyimagenet-windows")
-        elif system == "Linux":
-            base = ProjectPath.datasets.joinpath("tinyimagenet-linux")
-        train: Path = base.joinpath("train")
-        val: Path = base.joinpath("val")
-        test: Path = base.joinpath("test")
-        wnids: Path = base.joinpath("wnids.txt")
-        words: Path = base.joinpath("words.txt")
+    class PascalVOC2012:
+        base: Path = ProjectPath.base.joinpath("dataset/PascalVOC2012")
+        JPEGImages: Path = base.joinpath("JPEGImages")
 
-    def __str__(self):
-        return "DatasetPath for iCaRL, containing Cifar100 and ImageNet2012"
+        _train_class_idx: List[Path] = list(base.joinpath("ImageSets", "Main").glob(r"*_train.txt"))
+        _val_class_idx: List[Path] = list(base.joinpath("ImageSets", "Main").glob(r"*_val.txt"))
 
+        # Attention: 同一个图像是存在多个标签的, 后续需要去重复
+        # get train
+        train_idx: Dict[str, List[Path]] = {}
+        _seen_img = np.array(["-1"], dtype=str)
+        for _path in _train_class_idx:
+            _cls = _path.stem.split("_")[0]
+            _data = np.loadtxt(_path, dtype=str)
+            _mask = np.where(_data == "1")[0]
+            train_idx[_cls] = np.apply_along_axis(
+                arr=_data[_mask], axis=1,
+                func1d=lambda x: ProjectPath.base.joinpath(
+                    "dataset", "PascalVOC2012", "JPEGImages", f"{x[0]}.jpg"
+                )
+            ).tolist()
 
-# load label
-with DatasetPath.Cifar100.meta.open(mode="rb") as f:
-    meta: Dict[str, Any] = pickle.load(f)
-cifar100_labels = meta["fine_label_names"]
-cifar100_label2num = dict(zip(cifar100_labels, range(len(cifar100_labels))))
-cifar100_num2label = dict(zip(cifar100_label2num.values(), cifar100_label2num.keys()))
-
-
-# 多分类评价指标从confusion matrix中计算参考: https://zhuanlan.zhihu.com/p/147663370
-class ClassificationEvaluator:
-    """
-    ClassificationEvaluator will automatically record each batch, calculate confusion matrix and give classification
-    evaluations of top 1 or top 5.
-    """
-
-    def __init__(self, num_class: int) -> None:
-        """
-        init the evaluator
-
-        Args:
-            num_class (int): number of all prediction classes
-        """
-        self._num_class = num_class
-        # rows: ground truth class, cols: predicted class
-        self.top1_confusion_matrix = np.zeros(shape=(num_class, num_class))
-        self.top5_confusion_matrix = np.zeros(shape=(num_class, num_class))
-
-        # register measurement
-        self._measure: Dict[str, Callable] = {
-            "accuracy": self.accuracy,
-            "precision": self.precision,
-            "recall": self.recall
-        }
-
-    def add_batch_top1(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
-        """
-        add_batch_top1 is used to record the confusion matrix of a batch to calculate top 5 evaluations
-
-        Args:
-            y_pred (Union[torch.Tensor, np.ndarray]): predictions made by the network, should be [batch, class_score]
-            y (Union[torch.Tensor, np.ndarray]): ground truth label, should be [batch]
-
-        Returns:
-            np.ndarray: top 1 aconfusion matrix of the given batch
-
-        Examples:
-            >>> x, y = next(iter(dataloader))
-            >>> y_pred = network(x)
-            >>> ce = ClassificationEvaluator(num_class=100)
-            >>> ce.add_batch_top1(y_pred)
-            >>> # equals to
-            >>> ce.add_batch_top1(y_pred.argmax(dim=1))
-        """
-        # check type
-        assert isinstance(y_pred, (torch.Tensor, np.ndarray)), f"Not suppported type for pred_y: {type(y_pred)}"
-        assert isinstance(y, (torch.Tensor, np.ndarray)), f"Not suppported type for y: {type(y)}"
-        # check length
-        assert (a := len(y_pred)) == (b := len(
-            y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
-        y_pred = y_pred if isinstance(y_pred, np.ndarray) else y_pred.detach().to(device="cpu").numpy()
-        y = y if isinstance(y, np.ndarray) else y.detach().to(device="cpu").numpy()
-
-        # construc batch confusion matrix and add to self.confusion_matrix
-        k = (y >= 0) & (y < self._num_class)
-
-        # convert [batch, num_class] prediction scores to [batch] prediction results
-        y_pred_cls = (y_pred if y_pred.ndim == 1 else y_pred.argmax(axis=1)).squeeze()
-
-        confusion_matrix: np.ndarray
-        # bincount for fast classification confusion matrix
-        confusion_matrix = np.bincount(
-            self._num_class * y.astype(int) + y_pred_cls.astype(int),
-            minlength=self._num_class ** 2
-        ).reshape(self._num_class, self._num_class)
-        self.top1_confusion_matrix += confusion_matrix
-        return confusion_matrix
-
-    def add_batch_top5(self, y_pred: Union[torch.Tensor, np.ndarray], y: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
-        """ 
-        add_batch_top5 is used to record the confusion matrix of a batch to calculate the top 1 evaluations
-
-        Args:
-            y_pred (Union[torch.Tensor, np.ndarray]): prediction made by the network, should be [batch, class_score]
-            y (Union[torch.Tensor, np.ndarray]): ground truth label, should be [batch]
-
-        Returns:
-            np.ndarray: top 1 confusion matrix of the given batch
-
-        Examples:
-            >>> x, y = next(iter(dataloader))
-            >>> y_pred = network(x)
-            >>> ce = ClassificationEvaluator(num_class=100)
-            >>> ce.add_batch_top5(y_pred)
-            >>> # the following will cause error
-            >>> ce.add_batch_top5(y_pred.argmax(dim=1))
-        """
-        # check type
-        assert isinstance(y_pred, (torch.Tensor, np.ndarray)), f"Not suppported type for pred_y: {type(y_pred)}"
-        assert isinstance(y, (torch.Tensor, np.ndarray)), f"Not suppported type for y: {type(y)}"
-        # check length
-        assert (a := len(y_pred)) == (b := len(
-            y)), f"None-equal predictions and ground truth, given prediction of {a} examples, but only with {b} ground truth"
-        # check input
-        assert y_pred.ndim == 2, f"For top5 evaluation, you should input [batch, class_score] tensor or ndarray, but you offered: {y_pred.shape}"
-        y_pred = y_pred if isinstance(y_pred, np.ndarray) else y_pred.detach().to(device="cpu").numpy()
-        y = y if isinstance(y, np.ndarray) else y.detach().to(device="cpu").numpy()
-
-        # construc batch confusion matrix and add to self.confusion_matrix
-        k = (y >= 0) & (y < self._num_class)
-
-        # this could be done by torch.Tensor.topk, but for numpy, argsort is O(NlongN), following is a O(N) implementation
-        # [1st, 2st, ..., 5st]
-        y_pred_cls = np.argpartition(y_pred, kth=-5, axis=1)[:, -5:][:, ::-1]
-
-        correct_mask = (y[:, np.newaxis] == y_pred_cls).any(axis=1)
-        pred_yy = np.zeros_like(y)
-        pred_yy[correct_mask] = y[correct_mask]
-        pred_yy[~correct_mask] = y_pred_cls[~correct_mask, 0]
-
-        confusion_matrix: np.ndarray
-        # bincount for fast classification confusion matrix
-        confusion_matrix = np.bincount(
-            self._num_class * y.astype(int) + pred_yy.astype(int),
-            minlength=self._num_class ** 2
-        ).reshape(self._num_class, self._num_class)
-        self.top5_confusion_matrix += confusion_matrix
-        return confusion_matrix
-
-    def accuracy(self, top: int = 5) -> np.float64:
-        """
-        accuracy calculate overall accuracy after an epoch
-
-        Args:
-            top (int, optional): Top k accuracy to calculate. Defaults to 5.
-
-        Returns:
-            np.float64: overall acuracy
-
-        Examples:
-            >>> mean_acc = ce.accuracy(top=1)
-            >>> mean_acc
-            0.8234321212
-            >>> mean_acc = ce.accuracy(top=5)
-            >>> mean_acc
-            0.9312321245
-        """
-        assert top in [1, 5], f"Only support for top1 and top5"
-        confusion_matrix: np.ndarray = self.__getattribute__(f"top{top}_confusion_matrix")
-
-        acc: np.ndarray = confusion_matrix.trace() / confusion_matrix.sum()
-        return acc
-
-    def precision(self, top: int = 5) -> Tuple[np.ndarray, np.float64]:
-        """
-        precision calculate per-class/mean precision after an epoch
-
-        Args:
-            top (int, optional): Top k precision to calculate. Defaults to 5.
-
-        Returns:
-            Tuple[np.ndarray, np.float64]: precisions of each class (np.ndarray) and mean precision (np.float64)
-
-        Examples:
-            >>> per_class_precision, mean_precision = ce.precision(top=1)
-            >>> per_class_precision, mean_precision = ce.precision(top=5)
-        """
-        assert top in [1, 5], f"Only support for top1 and top5"
-        confusion_matrix: np.ndarray = self.__getattribute__(f"top{top}_confusion_matrix")
-
-        # ignore zero division error, invalid division warning
-        with np.errstate(divide="ignore", invalid="ignore"):
-            per_class_precision: np.ndarray = confusion_matrix.diagonal() / confusion_matrix.sum(axis=0)
-            per_class_precision[np.isnan(per_class_precision)] = 0
-        mean_precision = per_class_precision.mean()
-        return per_class_precision, mean_precision
-
-    def recall(self, top: int = 5) -> Tuple[np.ndarray, np.float64]:
-        """
-        recall calculate per-class/mean recall after an epoch
-
-        Args:
-            top (int, optional): Top k recall to calculate. Defaults to 5.
-
-        Returns:
-            Tuple[np.ndarray, np.float64]: recall of each class (np.ndarray) and mean recall (np.float64)
-
-        Examples:
-            >>> per_class_recall, mean_recall = ce.precision(top=1)
-            >>> per_class_recall, mean_recall = ce.precision(top=5)
-        """
-        assert top in [1, 5], f"Only support for top1 and top5"
-        confusion_matrix: np.ndarray = self.__getattribute__(f"top{top}_confusion_matrix")
-
-        # ignore zero division error, invalid division warning
-        with np.errstate(divide="ignore", invalid="ignore"):
-            per_class_recall: np.ndarray = confusion_matrix.diagonal() / confusion_matrix.sum(axis=1)
-            per_class_recall[np.isnan(per_class_recall)] = 0
-        mean_recall = per_class_recall.mean()
-        return per_class_recall, mean_recall
-
-    def new_epoch(self) -> None:
-        """
-        new_epoch refresh all tracked batches, should be called in a new epoch
-
-        Returns:
-            None
-
-        Examples:
-            >>> for epoch in range(n_epoch):
-            >>>     ce.new_epoch()
-            >>>     # train
-            >>>     for x, y in train_loader:
-            >>>         # pass
-            >>>         ce.add_batch_top1(...)
-            >>>         ce.add_batch_top5(...)
-        """
-        self.top1_confusion_matrix = np.zeros(shape=(self._num_class, self._num_class))
-        self.top5_confusion_matrix = np.zeros(shape=(self._num_class, self._num_class))
-
-    def make_grid(self, title: str, labels: List[str], top: int = 5) -> str:
-        """
-        make_grid generate evaluation table after an epoch
-
-        Args:
-            title (str): title of the table
-            labels (List[str]): all labels
-            top (int, optional): select top k evaluations. Defaults to 5.
-
-        Returns:
-            str: generated table
-
-        Examples:
-            >>> print(ce.make_grid())
-        """
-        assert len(
-            labels) == self._num_class, f"Evaluator is initialized with {self._num_class} classes, but reveive only {len(labels)} labels."
-        data = []
-        index = []
-        column = labels + ["Mean"]
-        last_col = []
-        for measure_name, meansure in self._measure.items():
-            index.append(measure_name)
-            result = meansure(top=top)
-            if isinstance(result, tuple):
-                a = np.random.randn(10, 10)
-                np.round(a, )
-                data.append(np.round(result[0], decimals=4))
-                last_col.append(np.round(result[1], decimals=4))
-            else:
-                data.append(np.array(["---"] * (len(column) - 1)))
-                last_col.append(np.round(result, decimals=4))
-        data = np.array(data)
-        last_col = np.array(last_col)[:, np.newaxis]
-        df = pd.DataFrame(np.hstack((data, last_col)), index=index, columns=column).T
-        data = df.to_numpy()
-        index = df.index.to_numpy()
-        column = df.columns.tolist()
-        data = np.hstack((index[:, np.newaxis], data)).tolist()
-        column.insert(0, "class")
-        data.insert(0, column)
-        data[-1] = [f"{Fore.BLUE}{i}{Fore.RESET}" for i in data[-1]]
-        table = SingleTable(data)
-        table.title = title + f" top {top}"
-        return table.table
+        # get validation
+        val_idx: Dict[str, List[Path]] = {}
+        for _path in _val_class_idx:
+            _cls = _path.stem.split("_")[0]
+            _data = np.loadtxt(_path, dtype=str)
+            _mask = np.where(_data == "1")[0]
+            val_idx[_cls] = np.apply_along_axis(
+                arr=_data[_mask], axis=1,
+                func1d=lambda x: ProjectPath.base.joinpath(
+                    "dataset", "PascalVOC2012", "JPEGImages", f"{x[0]}.jpg"
+                )
+            ).tolist()
 
 
-def visualize(image: Union[torch.Tensor, np.ndarray],
-              cls: Union[None, int, str, torch.Tensor, np.ndarray] = None) -> np.ndarray:
-    """
-    visualize given image(s) and return a grid of all given image(s) with label(s) (if provided)
+class ClassLabelLookuper:
+    def __init__(self, datasets: str) -> None:
+        assert datasets in (s := [name for name, value in DatasetPath.__dict__.items() if isinstance(value, type)]), \
+            f"{Fore.RED}Invalid Dataset, should be in {s}, but you offered {datasets}"
 
-    Args:
-        image (Union[torch.Tensor, np.ndarray]): images to display, should be in the shape of [channel, width, height] or [batch, channel, width, height]
-        cls (Union[None, int, str, torch.Tensor, np.ndarray], optional): label(s) of all given image(s). Defaults to None.
+        self.cls: List[str]
+        self._cls2label: Dict[str, int]
+        self._label2cls: Dict[int, str]
 
-    Returns:
-        np.ndarray: rendered iamges ([height, width, channel]), can be display by PIL or matplotlib
-
-    Examples:
-        >>> x, y = next(iter(train_loader))
-        >>> visualize(image=x, cls=y)
-    """
-    num = 1 if image.ndim == 3 else image.shape[0]
-    cls = np.array([""] * num) if cls is None else cls
-    cls = np.array([cls]) if isinstance(cls, (int, str)) else cls
-    cls = cls.numpy() if isinstance(cls, torch.Tensor) else cls
-    try:
-        assert num == len(cls), f"{num} images with {len(cls)} labels"
-    except TypeError:
-        cls = np.array([cls.item()])
-    image: torch.Tensor = image if isinstance(image, torch.Tensor) else torch.from_numpy(image)
-
-    if image.ndim == 3:
-        image = image.unsqueeze(0)
-
-    assert image.shape[
-               1] == 3, f"shape of image should be [batch_size, channel, width, height] or [channel, width, height]"
-    image = image.permute(0, 2, 3, 1)
-
-    cols = int(np.sqrt(num))
-    rows = num // cols + (0 if num % cols == 0 else 1)
-
-    if isinstance(cls[0], str):
-        converter = lambda x: x
-    else:
-        converter = lambda x: cifar100_num2label[x]
-
-    ax: List[axes.Axes]
-    fig: figure.Figure
-    fig, ax = plt.subplots(nrows=rows, ncols=cols, tight_layout=True, figsize=(1 * rows, 2 * cols))
-    for i in range(rows):
-        if rows == 1 and cols == 1:
-            ax.imshow(image[i])
-            ax.set_title(converter(cls[i]))
-            ax.set_axis_off()
-        elif cols == 1 and rows > 1:
-            ax[i].imshow(image[i])
-            ax[i].set_title(converter(cls[i]))
-            ax[i].set_axis_off()
+        if datasets == "Cifar10":
+            with DatasetPath.Cifar10.meta.open(mode="rb") as f:
+                meta = pickle.load(f)
+            self.cls = meta["label_names"]
+        elif datasets == "Cifar100":
+            with DatasetPath.Cifar100.meta.open(mode="rb") as f:
+                meta = pickle.load(f)
+            self.cls = meta["fine_label_names"]
         else:
-            for j in range(cols):
-                idx = i * cols + j - 1
-                if idx < num:
-                    ax[i][j].imshow(image[idx])
-                    ax[i][j].set_title(converter(cls[idx]))
-                ax[i][j].set_axis_off()
-    # plt.subplots_adjust()
-    canvas = fig.canvas
+            self.cls = DatasetPath.PascalVOC2012.train_idx.keys()
+
+        self._cls2label = dict(zip(self.cls, range(len(self.cls))))
+        self._label2cls = dict(zip(range(len(self.cls)), self.cls))
+
+    def get_class(self, label: int) -> str:
+        return self._label2cls[label]
+
+    def get_label(self, cls: str) -> int:
+        return self._cls2label[cls]
+
+
+class ClassificationEvaluator:
+    def __init__(self, dataset: str):
+        self._ccn: ClassLabelLookuper = ClassLabelLookuper(datasets=dataset)
+        self.ds = dataset
+        self.cls: List[str] = self._ccn.cls
+        self.confusion_top1 = np.zeros(shape=(len(self.cls),) * 2, dtype=int)
+        self.confusion_top5 = np.zeros(shape=(len(self.cls),) * 2, dtype=int)
+
+    def __check(self, top: int):
+        assert top in [1, 5], f"{Fore.RED}Wrong top-k, can only be top 1 or top 5"
+    
+    def new_epoch(self):
+        self.confusion_top1 = np.zeros(shape=(len(self.cls),) * 2, dtype=int)
+        self.confusion_top5 = np.zeros(shape=(len(self.cls),) * 2, dtype=int)
+    
+    def record(self, y_pred: torch.Tensor, y: torch.Tensor) -> None:
+        y = y.detach().cpu().numpy()
+        y_pred = y_pred.detach().cpu().topk(k=5, dim=1, largest=True, sorted=True)[1].numpy()
+
+        # get valid examples
+        k = (y >= 0) & (y < len(self.cls))
+
+        # get top 5 predictions
+        # Warn 下面这句话计算的有问题, 直接使用torch.topk计算
+        # y_pred = np.argpartition(y_pred, kth=-5, axis=1)[:, -5:][:, ::-1]
+
+        # get top 1 confusion matrix of the batch
+        top1_cm = np.bincount(
+            len(self.cls) * y[k].astype(int) + y_pred[k, 0].astype(int),
+            minlength=len(self.cls) ** 2
+        ).reshape((len(self.cls), ) * 2)
+        self.confusion_top1 += top1_cm
+
+        # get top 5 confusion matrix of the batch
+        correct_mask = (y[:, np.newaxis] == y_pred).any(axis=1)
+        _y_pred = np.zeros_like(y)
+        _y_pred[correct_mask] = y[correct_mask]
+        _y_pred[~correct_mask] = y_pred[~correct_mask, 0]
+        y_pred = _y_pred
+
+        top5_cm = np.bincount(
+            len(self.cls) * y[k].astype(int) + y_pred[k].astype(int),
+            minlength=len(self.cls) ** 2
+        ).reshape((len(self.cls), ) * 2)
+        self.confusion_top5 += top5_cm
+
+    def get_confusion(self, top: Optional[int] = 1, title: Optional[str] = None, tofile: bool = False) -> Union[str, pd.DataFrame]:
+        self.__check(top)
+        confusion_matrix = getattr(self, f"confusion_top{top}")
+        df = pd.DataFrame(confusion_matrix, index=self.cls, columns=self.cls)
+        df.index.name = "gt"
+        df.columns.name = "pred"
+        try:
+            no_tbs = False
+            from terminaltables import AsciiTable
+            ll = df.reset_index().T.reset_index().T.values.tolist()
+            ll[0][0] = u"gt\u21A1 |pred\u21A0 "
+            table = AsciiTable(ll)
+            for i in range(len(self.cls) + 1):
+                table.justify_columns[i] = "center"
+            if table.ok or tofile:
+                table = str(table.table).split("\n")
+                len_row = len(table[0])
+                c = f"Top {top} Confusion Matrix of dataset {self.ds}" if title is None else title
+                table[0] = "+" + c.center(len_row - 2, "-") + "+"
+                t = "\n".join(table)
+                return t
+        except ModuleNotFoundError:
+            s1 = f"{Fore.YELLOW}terminaltables not found, print with pd. " \
+                 f"If you want prettier output, please install terminaltables"
+            no_tbs = True
+        s2 = f"{Fore.YELLOW}Terminal table break detected, print with pd"
+        pd.options.display.max_columns = len(self.cls)
+        pd.options.display.max_rows = len(self.cls)
+        print(s1 if no_tbs else s2)
+        return df
+    
+    @property
+    def acc(self) -> Tuple[float, float]:
+        accs = []
+        for top in [1, 5]:
+            cm = getattr(self, f"confusion_top{top}")
+            with np.errstate(divide='ignore', invalid='ignore'):
+                accs.append(
+                    np.nan_to_num(cm.trace() / cm.sum())
+                )
+        return tuple(accs)
+
+    @property
+    def recall(self) -> Tuple[float, float]:
+        recalls = []
+        for top in [1, 5]:
+            cm = getattr(self, f"confusion_top{top}")
+            with np.errstate(divide="ignore", invalid="ignore"):
+                per_class_recall: np.ndarray = cm.diagonal() / cm.sum(axis=1)
+                per_class_recall[np.isnan(per_class_recall)] = 0
+                mean_recall = per_class_recall.mean()
+            recalls.append(mean_recall.item())
+        return tuple(recalls)
+
+    @property
+    def precision(self) -> Tuple[float, float]:
+        precisions = []
+        for top in [1, 5]:
+            cm = getattr(self, f"confusion_top{top}")
+            with np.errstate(divide="ignore", invalid="ignore"):
+                per_class_precision: np.ndarray = cm.diagonal() / cm.sum(axis=0)
+                per_class_precision[np.isnan(per_class_precision)] = 0
+                mean_precision = per_class_precision.mean()
+            precisions.extend(mean_precision.item())
+        return tuple(precisions)
+
+
+ImageType = TypeVar(
+    "ImageType",
+    np.ndarray, torch.Tensor, Image.Image,
+    List[np.ndarray], List[torch.Tensor], List[Image.Image]
+)
+
+ClassType = TypeVar(
+    "ClassType",
+    str,
+    List[np.ndarray], List[torch.Tensor], List[Image.Image]
+)
+
+
+def _get_image(return_png: bool = False, driver: str = "ndarray"):
+    assert driver in ["pil", "ndarray"]
+
+    def visualize_func_decider(show_func: Callable = _visualize) -> Callable:
+        def show_with_png(*args, **kwargs):
+            show_func(*args, **kwargs)
+            import matplotlib.backends.backend_agg as bagg
+            canvas = bagg.FigureCanvasAgg(plt.gcf())
+            canvas.draw()
+            png, (width, height) = canvas.print_to_buffer()
+            png = np.frombuffer(png, dtype=np.uint8).reshape(
+                (height, width, 4))
+
+            if driver == 'pil':
+                return Image.fromarray(png)
+            else:
+                return png
+
+        if return_png:
+            return show_with_png
+        else:
+            return show_func
+
+    return visualize_func_decider
+
+
+def _visualize(image: ImageType, cls: Optional[ClassType] = None) -> None:
+    image_list: List[np.ndarray]
+    title_list: List[str]
+
+    # type check
+    assert isinstance(
+        image, (Image.Image, np.ndarray, torch.Tensor, list)
+    ), f"{Fore.RED}Wrong type, input type of image should be (Image.Image, np.ndarray, torch.Tensor, list). " \
+       f"But received {type(image)}"
+    if isinstance(image, list):
+        assert all(
+            isinstance(i, (Image.Image, np.ndarray, torch.Tensor, list)) for i in image
+        ), f"{Fore.RED}Wrong type, input image type in the list should be (Image.Image, np.ndarray, torch.Tensor, " \
+           f"list). But not all image in the image are valid"
+
+    assert isinstance(cls,
+                      (str, list)) or cls is None, f"{Fore.RED}Wrong type, input type of cls should be (str, list). " \
+                                                   f"But received {type(cls)}"
+    if isinstance(cls, list):
+        assert all(
+            isinstance(i, str) for i in cls
+        ), f"{Fore.RED}Worng type, input cls in the list type should be str, but not all cls in the cls are valid"
+
+    # make image
+    image_list = []
+    if isinstance(image, Image.Image):
+        image = np.asarray(image)
+    if isinstance(image, (np.ndarray, torch.Tensor)):
+        assert image.ndim in [2, 3, 4], \
+            f"{Fore.RED}Wrong shape, input dimension should be " \
+            f"2: [height, width] for single 1-channel gray image, " \
+            f"3: [height, width, channel] for single 3-channel color image, or multiple gray image and " \
+            f"4: [batch, height, width, channel] for multiple 3-channel color image"
+        image = image if isinstance(image, np.ndarray) else image.detach().cpu().numpy()
+        # gray image
+        if image.ndim == 2:
+            image_list.append(np.expand_dims(image, axis=-1))
+        elif image.ndim == 3:
+            if (c_num := image.shape[-1]) == 3:
+                # single 3-channel colored image [height, width, channel]
+                image_list.append(image)
+            elif (c_num := image.shape[0]) == 3:
+                # single 3-channel colored image [channel, height, width]
+                image_list.append(image.transpose(1, 2, 0))
+            else:
+                # multiple 1-channel gray image
+                image_list.extend([image[..., i] for i in range(c_num)])
+        else:
+            # multiple 3-channel color image
+            if image.shape[1] == 3:
+                image = image.transpose(0, 2, 3, 1)
+            image_list.extend([image[i, ...] for i in range(image.shape[0])])
+    else:
+        for img in image:
+            if isinstance(img, Image.Image):
+                image = np.asarray(img)
+            if isinstance(img, (np.ndarray, torch.Tensor)):
+                assert img.ndim in [2, 3], f"{Fore.RED}Wrong shape, input dimension should be " \
+                                           f"2: [height, width] for single 1-channel gray image, " \
+                                           f"3: [height, width, channel] for 3-channel color image"
+                img = img if isinstance(img, np.ndarray) else img.detach().cpu().numpy()
+                if img.ndim == 2:
+                    image_list.append(np.expand_dims(img, axis=-1))
+                elif img.ndim == 3:
+                    assert img.shape[-1] == 3, f"{Fore.RED}Wrong shape, input image in the list should be 3-channel " \
+                                               f"image"
+                    image_list.append(img)
+
+    # make title
+    num_image = len(image_list)
+    title_list = cls if isinstance(cls, list) else ["" if cls is None else cls] * num_image
+    assert (num_cls := len(title_list)) == num_image or not isinstance(cls, list), \
+        f"{Fore.RED}Image num and class num mismatch, {num_cls} images with {num_image} class"
+
+    # draw
+    import math
+    from matplotlib.axes import Axes
+    from matplotlib.backends.backend_agg import FigureCanvasAgg as Canvas
+
+    n_row: int = int(math.sqrt(num_image))
+    n_col: int = math.ceil(num_image / n_row)
+
+    ax: List[List[Axes]]
+    fig, ax = plt.subplots(nrows=n_row, ncols=n_col, layout="tight", figsize=(2 * n_row, 2 * n_col))
+    if len(image_list) == 1:
+        ax = [[ax]]
+    elif n_row == 1:
+        ax = [ax]
+
+    fill_num = n_col * n_row - len(image_list)
+    image_list.extend([np.ones(shape=(10, 10, 3), dtype=int) * 255] * fill_num)
+    title_list.extend([""] * fill_num)
+
+    for img_idx, (img, title) in enumerate(zip(image_list, title_list)):
+        row = img_idx // n_col
+        col = img_idx % n_col
+        ax[row][col].imshow(img)
+        ax[row][col].set_title(title)
+        ax[row][col].set_axis_off()
+
+    canvas = Canvas(fig)
     canvas.draw()
 
-    return np.frombuffer(canvas.tostring_rgb(), dtype='uint8').reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+def visualize_plt(*args, **kwargs) -> None:
+    _visualize(*args, **kwargs)
+    plt.ion()
+    plt.show()
 
 
-def legal_converter(path: Path) -> Path:
-    """
-    legal_converter convert path to legal path in different os
+def visualize_np(*args, **kwargs) -> np.ndarray:
+    img = _get_image(return_png=True, driver="ndarray")(_visualize)(*args, **kwargs)
+    plt.ion()
+    plt.show()
+    return img
 
-    Args:
-        path (Path): path to convert
 
-    Returns:
-        path: legal path
-
-    Examples:
-        >>> p = Path("1:2:3.1.2.3")
-        >>> legal_converter(p)
-        1_2_3.1.2.3
-    """
-    global system
-    if system == "Windows":
-        illegal_char = ["<", ">", ":", "\"", "'", "/", "\\", "|", "?", "*"]
-    elif system == "Linux":
-        illegal_char = ["\\"]
-    relative_path: List[str] = list(str(path.relative_to(ProjectPath.base)).split("\\"))
-    for idx in range(len(relative_path)):
-        for cc in illegal_char:
-            relative_path[idx] = relative_path[idx].replace(cc, "_")
-    return ProjectPath.base.joinpath(*relative_path)
+def visualize_pil(*args, **kwargs) -> Image.Image:
+    return _get_image(return_png=True, driver="pil")(_visualize)(*args, **kwargs)
 
 
 if __name__ == "__main__":
-    # check paths
-    # dp = DatasetPath()
-    # for p in dp.Cifar100.__dict__.values():
-    #     if isinstance(p, Path):
-    #         print(p, p.exists())
-    # for p in dp.tinyImageNet.__dict__.values():
-    #     if isinstance(p, Path):
-    #         print(p, p.exists())
+    import pprint
 
-    # check labels
-    # import pprint
+    # pp = ProjectPath()
+    # print(DatasetPath.Cifar10.train)
+    # print(DatasetPath.Cifar100.train)
+    # print(DatasetPath.PascalVOC2012.train_idx.keys().__len__())
+    # print(type(DatasetPath), isinstance(DatasetPath, type))
+    # print([name for name, value in DatasetPath.__dict__.items() if isinstance(value, type)])
+    # print(ClassLabelLookuper(datasets="Cifar10"))
+    # print(ClassLabelLookuper(datasets="Cifar100"))
+
+    # for i in [name for name, value in DatasetPath.__dict__.items() if isinstance(value, type)]:
+    #     print(ClassLabelLookuper(i)._cls2label)
+
+    # import pickle
     #
-    # pprint.pprint(labels)
-    # pprint.pprint(label2num)
-    # pprint.pprint(num2label)
+    # with DatasetPath.Cifar100.train.open(mode="rb") as f:
+    #     data = pickle.load(f, encoding="bytes")
+    #     images, labels = data[b"data"], data[b"fine_labels"]
+    #     images = images.reshape(-1, 3, 32, 32)
+    # ccn = ClassLabelLookuper(datasets="Cifar100")
+    # length = 64
+    # visualize_pil(images[0: length + 1], [ccn.get_class(i) for i in labels[0: length + 1]]).show()
+    # visualize_plt(images[0: length + 1], [ccn.get_class(i) for i in labels[0: length + 1]])
+    # a = visualize_np(images[0: length + 1], [ccn.get_class(i) for i in labels[0: length + 1]])
+    # print(a.shape)
 
-    # test legal_converter
-    # import datetime
-    # from network import ResNet34
+    # def rand_shape(): return (np.random.randint(100, 256), np.random.randint(100, 256))
+    # image = [np.random.randint(low=0, high=256, size=(*rand_shape(), 3), dtype=int) for i in range(64)]
+    # visualize_plt(image)
 
-    # lc = legal_converter(ProjectPath.runs / ResNet34.__name__ / str(datetime.datetime.now()))
-    # print(lc)
-
-    # test evaluator
-    ce = ClassificationEvaluator(num_class=10)
-    y = np.repeat(np.arange(0, 10)[np.newaxis, :], repeats=10).flatten()
-    pred_y = np.zeros(shape=(100))
-    # top1
-    # ce.add_batch(pred_y=pred_y, y=y)
-    # ce.add_batch_top1(y_pred=y, y=y)
-    # top5
-    pred_y = np.random.random(size=(100, 10))
-    ce.add_batch_top1(y_pred=pred_y, y=y)
-    ce.add_batch_top5(y_pred=pred_y, y=y)
-
-    print(ce.accuracy(top=1))
-    print(ce.accuracy(top=5))
-    print(ce.precision(top=1))
-
-    # print(ce.make_grid(title="Epoch 1", top=1, labels=cifar100_labels[:10]))
+    ce = ClassificationEvaluator(dataset="Cifar100")
+    ce.confusion_top1 += 10
+    a = ce.get_confusion()
+    print(a)
