@@ -29,7 +29,8 @@ import numpy as np
 from colorama import Fore, Style, init
 
 # My Library
-from network import ResNet34, _ResNetBase
+from network import _ResNetBase
+from network import ResNet34, ResNet50, ResNet101, ResNet152
 from datasets import MultiDataset
 from helper import ProjectPath, DatasetPath
 from helper import ClassificationEvaluator, ClassLabelLookuper
@@ -57,10 +58,11 @@ class Trainer:
     num_worker: int = 0 if platform.system() == "Windows" else 2
 
     train_T = T.Compose([
-        T.Resize(size=(256, 256)),
-        T.RandomCrop(size=(224, 224)),
+        T.Resize(size=(256)),
+        T.CenterCrop(size=(224, 224)),
         T.RandomHorizontalFlip(),
         T.ColorJitter(),
+        # T.RandomAffine(degrees=(0, 50), translate=(0.1, 0.3), scale=(0.6, 0.9)),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -87,7 +89,7 @@ class Trainer:
         self.cifar: bool = cifar
         self.log_loss_step: Union[None, int] = log_loss_step
         self.log_confusion_epoch: Union[None, int] = log_confusion_epoch
-        self.network: AlexNetPaper = network.to(
+        self.network: _ResNetBase = network.to(
             self.avaliable_device, non_blocking=True)
 
         # make file suffix
@@ -222,6 +224,10 @@ class Trainer:
             train_evaluator.new_epoch()
             val_evaluator.new_epoch()
 
+            # adjust learning rate
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr * (n_epoch - epoch) / n_epoch
+
             # train
             self.network.train()
             for step, (x, y) in enumerate(train_loader):
@@ -247,8 +253,6 @@ class Trainer:
 
             # val
             self.network.eval()
-            all_num = 0
-            acc_num = 0
             with torch.no_grad():
                 for step, (x, y) in enumerate(val_loader):
                     x = x.to(device=self.avaliable_device, dtype=self.default_dtype, non_blocking=True)
@@ -268,7 +272,7 @@ class Trainer:
                 max_top1 = new_acc[0]
                 self.logger.info(
                     f"{Fore.YELLOW}Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}}|{n_epoch}], "\
-                    f"new top1 Acc: {new_acc[0]:>.5f}, top5 Acc:{new_acc[1]:>.5f}"
+                    f"new top1 Acc: {Style.BRIGHT}{new_acc[0]:>.5f}{Style.NORMAL}, top5 Acc:{new_acc[1]:>.5f}"
                 )
                 if not self.dry_run:
                     torch.save(self.network.state_dict(), self.checkpoint_path)
@@ -280,7 +284,7 @@ class Trainer:
                 early_stop_cnt += 1
                 self.logger.info(
                     f"{Fore.GREEN}Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}}|{n_epoch}], "\
-                    f"top1 Acc: [{new_acc[0]:>5f}|{max_top1:>.5f}], top5 Acc: [{new_acc[1]:>5f}] early_stop_cnt: [{early_stop_cnt:>{es_digits}d}|{early_stop}]"
+                    f"top1 Acc: [{new_acc[0]:>5f}|{Style.BRIGHT}{max_top1:>.5f}{Style.NORMAL}], top5 Acc: [{new_acc[1]:>5f}] early_stop_cnt: [{early_stop_cnt:>{es_digits}d}|{early_stop}]"
                 )
 
             # tensorboard
@@ -334,11 +338,11 @@ class Trainer:
         train_evaluator = ClassificationEvaluator(dataset=self.train_ds.dataset)
         val_evaluator = ClassificationEvaluator(dataset=self.val_ds.dataset)
         train_loader = data.DataLoader(
-            self.train_ds, batch_size=32, shuffle=True, num_workers=self.num_worker,
+            self.train_ds, batch_size=128, shuffle=True, num_workers=self.num_worker,
             pin_memory=True
         )
         val_loader = data.DataLoader(
-            self.val_ds, batch_size=32, shuffle=False, num_workers=self.num_worker,
+            self.val_ds, batch_size=128, shuffle=False, num_workers=self.num_worker,
             pin_memory=True
         )
         loss_func = nn.CrossEntropyLoss()
@@ -368,6 +372,10 @@ class Trainer:
             # setup evaluator
             train_evaluator.new_epoch()
             val_evaluator.new_epoch()
+
+            # adjust learning rate
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = 0.01 * (n_epoch - epoch) / n_epoch
 
             # train
             self.network.train()
