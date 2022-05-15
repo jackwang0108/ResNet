@@ -62,7 +62,7 @@ class DatasetPath:
         val: PascalType
 
         @classmethod
-        def classification(cls) -> "PascalVOC2012":
+        def classification(cls) -> "DatasetPath.PascalVOC2012":
             # Attention: 同一个图像是存在多个标签的, 后续需要去重复
             train_idx: Dict[str, List[Path]] = {}
             train_class_idx: List[Path] = list(cls.ImageSets.joinpath("Main").glob(r"*_train.txt"))
@@ -96,14 +96,14 @@ class DatasetPath:
             return cls
 
         @classmethod
-        def segmentation(cls) -> "PascalVOC2012":
+        def segmentation(cls) -> "DatasetPath.PascalVOC2012":
             seg_path = cls.ImageSets.joinpath("Segmentation")
             train = np.loadtxt(seg_path.joinpath("train.txt"), dtype=str)[:, np.newaxis]
             val = np.loadtxt(seg_path.joinpath("val.txt"), dtype=str)[:, np.newaxis]
 
             cls.train: PascalSegmentationType = np.apply_along_axis(
                 arr=train, axis=1,
-                func1d=lambda x: cls.SegmentationClass.joinpath(f"{x[0]}.png")
+                func1d=lambda x: cls.JPEGImages.joinpath(f"{x[0]}.jpg")
             )
             cls.val: PascalSegmentationType = np.apply_along_axis(
                 arr=val, axis=1,
@@ -144,10 +144,14 @@ class ClassLabelLookuper:
 
 
 class ClassificationEvaluator:
-    def __init__(self, dataset: str):
-        self._ccn: ClassLabelLookuper = ClassLabelLookuper(datasets=dataset)
+    def __init__(self, dataset: str, cls_list: Optional[List[str]] = None):
+        if cls_list is None:
+            try:
+                self._ccn: ClassLabelLookuper = ClassLabelLookuper(datasets=dataset)
+                self.cls: List[str] = self._ccn.cls
+            except NameError:
+                assert False, f"{Fore.RED}Please offer class list or define your ClassLabelLookuper"
         self.ds = dataset
-        self.cls: List[str] = self._ccn.cls
         self.confusion_top1 = np.zeros(shape=(len(self.cls),) * 2, dtype=int)
         self.confusion_top5 = np.zeros(shape=(len(self.cls),) * 2, dtype=int)
 
@@ -350,7 +354,7 @@ def _visualize(image: ImageType, cls: Optional[ClassType] = None) -> None:
     else:
         for img in image:
             if isinstance(img, Image.Image):
-                image = np.asarray(img)
+                image.append(np.asarray(img))
             if isinstance(img, (np.ndarray, torch.Tensor)):
                 assert img.ndim in [2, 3], f"{Fore.RED}Wrong shape, input dimension should be " \
                                            f"2: [height, width] for single 1-channel gray image, " \
@@ -392,6 +396,11 @@ def _visualize(image: ImageType, cls: Optional[ClassType] = None) -> None:
     for img_idx, (img, title) in enumerate(zip(image_list, title_list)):
         row = img_idx // n_col
         col = img_idx % n_col
+        # value checl
+        if img.max() > 255 or img.min() < -1:
+            img_max = img.max(axis=0)
+            img_min = img.min(axis=0)
+            img = (img - img_min) / (img_max - img_max)
         ax[row][col].imshow(img)
         ax[row][col].set_title(title)
         ax[row][col].set_axis_off()
@@ -455,6 +464,10 @@ if __name__ == "__main__":
     # print(a)
 
     # print(DatasetPath.PascalVOC2012.classification().train)
-    for i in DatasetPath.PascalVOC2012.segmentation().train:
-        print(i, i.exists())
+    img = []
+    for num, i in enumerate(DatasetPath.PascalVOC2012.segmentation().train):
+        img.append(Image.open(i))
+        if num == 32:
+            break
+    visualize_pil(img).show()
     # print(DatasetPath.PascalVOC2012.segmentation().train)
