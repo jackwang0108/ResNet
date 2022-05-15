@@ -175,7 +175,7 @@ class _ResNetBase(nn.Module):
     # ImageNet like dataset, input images are large
     imagenet_like_datasets: List[str] = ["tinyImageNet200", "PascalVOC2012"]
 
-    def __init__(self, target_dataset: str, num_blocks: List[int], num_class: Union[int, None] = None):
+    def __init__(self, target_dataset: str, num_blocks: List[int], block_type: nn.Module, num_class: Union[int, None] = None):
         if not target_dataset in (a := self.cifar_like_dataset + self.imagenet_like_datasets):
             raise NotImplementedError(f"Not implemented for dataset: {target_dataset}, currently available datasets are"
                                       f" {a}")
@@ -201,7 +201,7 @@ class _ResNetBase(nn.Module):
             )
 
         # decide block type
-        block_type = _BasicResidualBlock if target_dataset in self.cifar_like_dataset else _BottleneckResidualBlock
+        # block_type = _BasicResidualBlock if target_dataset in self.cifar_like_dataset else _BottleneckResidualBlock
 
         self.stage1 = self._make_stage(
             block_type=block_type,
@@ -271,13 +271,31 @@ class _ResNetBase(nn.Module):
         blocks = []
         for block_idx, stride in enumerate(block_strides):
             blocks.append(
-                _BasicResidualBlock(in_channels=in_channels, out_channels=out_channels, stride=stride)
+                block_type(in_channels=in_channels, out_channels=out_channels, stride=stride)
             )
             if block_idx == 0:
                 # only the first block will do downsample and expand channels
                 in_channels = out_channels
         return nn.Sequential(*blocks)
 
+
+class ResNet18(_ResNetBase):
+    __name__ = "ResNet34"
+
+    def __init__(self, num_class: int, target_dataset: str):
+        assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
+        super(ResNet50, self).__init__(
+            num_class=num_class,
+            target_dataset=target_dataset,
+            block_type=_BasicResidualBlock,
+            num_blocks=[2, 2, 2, 2],
+        )
+
+    @torch.no_grad()
+    def inference(self, x: torch.Tensor) -> torch.Tensor:
+        preds: torch.Tensor = self(x)
+        result = preds.argmax(dim=1)
+        return result
 
 class ResNet34(_ResNetBase):
     __name__ = "ResNet34"
@@ -297,6 +315,61 @@ class ResNet34(_ResNetBase):
         return result
 
 
+class ResNet50(_ResNetBase):
+    __name__ = "ResNet34"
+
+    def __init__(self, num_class: int, target_dataset: str):
+        assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
+        super(ResNet50, self).__init__(
+            num_class=num_class,
+            target_dataset=target_dataset,
+            block_type=_BottleneckResidualBlock,
+            num_blocks=[3, 4, 6, 3],
+        )
+
+    @torch.no_grad()
+    def inference(self, x: torch.Tensor) -> torch.Tensor:
+        preds: torch.Tensor = self(x)
+        result = preds.argmax(dim=1)
+        return result
+
+
+class ResNet101(_ResNetBase):
+    __name__ = "ResNet34"
+
+    def __init__(self, num_class: int, target_dataset: str):
+        assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
+        super(ResNet101, self).__init__(
+            num_class=num_class,
+            target_dataset=target_dataset,
+            block_type=_BottleneckResidualBlock,
+            num_blocks=[3, 4, 23, 3],
+        )
+
+    @torch.no_grad()
+    def inference(self, x: torch.Tensor) -> torch.Tensor:
+        preds: torch.Tensor = self(x)
+        result = preds.argmax(dim=1)
+        return result
+
+
+class ResNet152(_ResNetBase):
+    __name__ = "ResNet34"
+
+    def __init__(self, num_class: int, target_dataset: str):
+        assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
+        super(ResNet152, self).__init__(
+            num_class=num_class,
+            target_dataset=target_dataset,
+            block_type=_BottleneckResidualBlock,
+            num_blocks=[3, 8, 36, 3],
+        )
+
+    @torch.no_grad()
+    def inference(self, x: torch.Tensor) -> torch.Tensor:
+        preds: torch.Tensor = self(x)
+        result = preds.argmax(dim=1)
+        return result
 
 if __name__ == "__main__":
     # [batch_size, channel, height, width]
@@ -319,7 +392,33 @@ if __name__ == "__main__":
     # print(brb_down(images).shape)
 
     # test network
-    resnet34 = ResNet34(num_class=100, target_dataset="Cifar100")
+    # resnet34 = ResNet34(num_class=100, target_dataset="Cifar100")
     # should be [16, 100]
-    print(resnet34(images).shape)
-    print(resnet34.inference(images))
+    # print(resnet34(images).shape)
+    # print(resnet34.inference(images))
+
+    # full test
+    import torch.utils.data as data
+    import torchvision.transforms as T
+    from datasets import MultiDataset
+
+    t = T.Compose([
+        T.Resize(256),
+        T.CenterCrop(224),
+        T.RandomHorizontalFlip(),
+        T.RandomAffine(degrees=(0, 50), translate=(0.1, 0.3), scale=(0.6, 0.9)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    md = MultiDataset(dataset="PascalVOC2012", split="train").set_transform(t)
+    loader = data.DataLoader(md, batch_size=64, shuffle=True, num_workers=2, pin_memory=True)
+
+    # resnet34 = ResNet34(num_class=20, target_dataset=md.dataset).cuda()
+    resnet34 = ResNet50(num_class=20, target_dataset=md.dataset).cuda()
+    x: torch.Tensor
+    y: torch.Tensor
+    for x, y in loader:
+        x, y = x.to(device="cuda:0", non_blocking=True), y.to(device="cuda:0", non_blocking=True)
+        y_pred = resnet34(x)
+        print(y_pred.shape, y_pred.device)
