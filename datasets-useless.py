@@ -1,7 +1,7 @@
 
 # Standard Library
-import psutil
 import pickle
+import threading
 from typing import *
 from pathlib import Path
 
@@ -34,6 +34,10 @@ ClassType = TypeVar(
 
 
 class MultiDataset(data.Dataset):
+    avaliable_device: torch.device = torch.device(
+        "cuda:0" if torch.cuda.is_available() else "cpu:0")
+    default_dtype: torch.dtype = torch.float
+
     def __init__(self, dataset: str, split: str):
         super(MultiDataset, self).__init__()
         assert split in (s := ["train", "val", "test"]), f"{Fore.RED}Invalid split, should be in {s}"
@@ -47,22 +51,75 @@ class MultiDataset(data.Dataset):
         assert dataset in self._dataset_reader.keys(), f"{Fore.RED}Invalid dataset, please select in " \
                                                        f"{self._dataset_reader.keys()}."
         self.image: Union[np.ndarray, List[Path]]
-        self.label: np.ndarray
+        self.label: List[int]
+        self.available_image: List[torch.Tensor]
+        self.available_label: List[int]
         self.image, self.label = self._dataset_reader[self.dataset]()
+        self.available_image = []
+        self.available_label = []
         self.select_train_val()
         self.num_class = len(ClassLabelLookuper(self.dataset).cls)
 
+        self.load_times = 0
+        # self.loading = False
+        # thd = threading.Thread(target=self._cpu_preloader, name="_cpu_preloader")
+        # thd.setDaemon(daemonic=True)
+        # thd.start()
+
     def __len__(self) -> int:
+        # while self.loading:
+        #     continue
         return len(self.image)
 
     def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
-        image, label = self.image[idx], self.label[idx]
-        if isinstance(image, Path):
-            image = Image.open(image)
-        elif isinstance(image, np.ndarray):
-            image = Image.fromarray(image.astype(np.uint8)).convert("RGB")
-        return self.transform(image), label
-    
+        self._cpu_preloader()
+        image, label = self.available_image.pop(idx), self.available_label.pop(idx)
+        # if isinstance(image, Path):
+        #     image = Image.open(image)
+        # else:
+        #     image = Image.fromarray(image.astype(np.uint8)).convert("RGB")
+        return image, label
+
+    def _cpu_preloader(self):
+        # load a batch of data to memory
+        # while True:
+        if len(self.available_image) < int(1 / 20 * len(self.image)):
+            self.loading = True
+            start = int(self.load_times / 20 * len(self.image))
+            end = int((self.load_times + 1) / 20 * len(self.image))
+
+            # buffered images and label
+            imgs = self.image[start:end]
+            buffered_images = []
+            buffered_labels = self.label[start:end]
+            if self.dataset in ["Cifar10", "Cifar100"]:
+                # buffer image
+                for i in imgs:
+                    i = Image.fromarray(i.astype(np.uint8)).convert("RGB")
+                    buffered_images.append(self.transform(i).to(
+                        device=self.avaliable_device,
+                        dtype=torch.long,
+                        non_blocking=True
+                    ))
+            else:
+                for p in imgs:
+                    i = Image.open(p)
+                    buffered_images.append(self.transform(i).to(
+                        device=self.avaliable_device,
+                        dtype=torch.long,
+                        non_blocking=True
+                    ))
+            # extend image
+            self.available_image.extend(buffered_images)
+            # extend labels
+            self.available_label.extend(torch.Tensor(buffered_labels).to(
+                device=self.avaliable_device,
+                dtype=torch.long,
+                non_blocking=True
+            ))
+            # update
+            self.load_times = (self.load_times + 1) % 20
+
     def set_transform(self, transform: T.Compose) -> "MultiDataset":
         self.transform = transform
         return self
@@ -70,8 +127,8 @@ class MultiDataset(data.Dataset):
     def select_train_val(self, trainval_ratio: Optional[float] = 0.2) -> None:
         # get image of each label
         self.label_image: Dict[int, np.ndarray] = {}
-        for label in np.unique(self.label):
-            self.label_image[label] = np.where(self.label == label)[0]
+        for label in np.unique(self.available_label):
+            self.label_image[label] = np.where(self.available_label == label)[0]
 
         if self.dataset in ["Cifar10", "Cifar100"]:
             if self.split == "test":
@@ -97,16 +154,15 @@ class MultiDataset(data.Dataset):
                 
                 # select train val
                 if self.split == "val":
-                    self.image = self.image[val]
-                    self.label = self.label[val]
+                    self.available_image = self.available_image[val]
+                    self.available_label = self.available_label[val]
                 else:
-                    self.image = self.image[train]
-                    self.label = self.label[train]
+                    self.available_image = self.available_image[train]
+                    self.available_label = self.available_label[train]
         else:
             return
 
-
-    def __read_cifar10(self) -> Tuple[np.ndarray, np.ndarray]:
+    def __read_cifar10(self) -> Tuple[np.ndarray, List[int]]:
         if self.split in ["train", "val"]:
             data = []
             for batch in DatasetPath.Cifar10.train:
@@ -119,9 +175,9 @@ class MultiDataset(data.Dataset):
                 data = pickle.load(f, encoding="bytes")
             image = data[b"data"].reshape(-1, 3, 32, 32)
             label = data[b"labels"]
-        return image.transpose(0, 2, 3, 1), np.array(label)
+        return image.transpose(0, 2, 3, 1), np.array(label).tolist()
 
-    def __read_cifar100(self) -> Tuple[np.ndarray, np.ndarray]:
+    def __read_cifar100(self) -> Tuple[np.ndarray, List[int]]:
         if self.split in ["train", "val"]:
             with DatasetPath.Cifar100.train.open(mode="rb") as f:
                 data = pickle.load(f, encoding="bytes")
@@ -132,9 +188,9 @@ class MultiDataset(data.Dataset):
                 data = pickle.load(f, encoding="bytes")
             image = data["data"].reshape(-1, 3, 32, 32)
             label = data["label"]
-        return image.transpose(0, 2, 3, 1), np.asarray(label)
+        return image.transpose(0, 2, 3, 1), np.asarray(label).tolist()
 
-    def __read_PascalVOC2012(self) -> Tuple[List[Path], np.ndarray]:
+    def __read_PascalVOC2012(self) -> Tuple[List[Path], List[int]]:
         image = []
         label = []
         ccn = ClassLabelLookuper(datasets="PascalVOC2012")
@@ -151,16 +207,7 @@ class MultiDataset(data.Dataset):
             assert False, f"{Fore.RED}PascalVOC2012 test data is not accesibly"
         # Attention: PascalVOC2012 中图像是存在重复的
         image, idx = np.unique(image, return_index=True)
-
-        # Attention: 大内存直接读进来
-        free_memory = float(psutil.virtual_memory().free) / 1024 / 1024 / 1024
-        if free_memory <= 3:
-            return image, np.array(label)[idx]
-        else:
-            img = []
-            for i in image:
-                img.append(Image.open(i))
-            return img, np.array(label)[idx]
+        return image, np.array(label)[idx].tolist()
 
 if __name__ == "__main__":
     # md = MultiDataset(dataset="PascalVOC2012", split="val")
@@ -173,7 +220,6 @@ if __name__ == "__main__":
 
     md = MultiDataset(dataset="PascalVOC2012", split="train")
     tt = T.Compose([
-        T.Resize(256),
         T.CenterCrop(size=(224, 224)),
         T.RandomHorizontalFlip(),
         T.ToTensor()
@@ -182,11 +228,8 @@ if __name__ == "__main__":
 
     ccn = ClassLabelLookuper(datasets=md.dataset)
     dl = data.DataLoader(md, batch_size=64)
-    l = 0
     for x, y in dl:
-        l += len(x)
         print(x.shape)
-        print(l)
         # visualize_pil(x, [ccn.get_class(i.item()) for i in y]).show()
         # break
 
