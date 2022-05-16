@@ -13,10 +13,9 @@ init(autoreset=True)
 
 
 class _BasicResidualBlock(nn.Module):
-    __name__ = "ResidualBlock"
 
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1,
-                 with_projection: Union[bool, None] = None) -> None:
+                 with_projection: Optional[bool] = None) -> None:
         """
         Pytorch implementation of basic residual block for shallow resnet, e.g., resnet18 and resnet34
         Args:
@@ -86,7 +85,6 @@ class _BasicResidualBlock(nn.Module):
 
 
 class _BottleneckResidualBlock(nn.Module):
-    __name__ = "ResidualBlock"
 
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1,
                  with_projection: Union[bool, None] = None) -> None:
@@ -170,30 +168,28 @@ class _ResNetBase(nn.Module):
     """ResNet pytorch implementation, offering ResNet variants implementation via __init__ parameters"""
     __name__ = "ResNetBase"
 
-    # cifar like dataset, input images are small
-    cifar_like_dataset: List[str] = ["Cifar10", "Cifar100"]
-    # ImageNet like dataset, input images are large
-    imagenet_like_datasets: List[str] = ["tinyImageNet200", "PascalVOC2012"]
-
-    def __init__(self, target_dataset: str, num_blocks: List[int], block_type: nn.Module, num_class: Union[int, None] = None):
-        if not target_dataset in (a := self.cifar_like_dataset + self.imagenet_like_datasets):
-            raise NotImplementedError(f"Not implemented for dataset: {target_dataset}, currently available datasets are"
-                                      f" {a}")
+    def __init__(
+        self, 
+        num_blocks: List[int], 
+        block_type: Optional[Type[Union[_BasicResidualBlock, _BottleneckResidualBlock]]] = None, 
+        large_input: Optional[bool] = True, 
+        num_class: Union[int, None] = None
+    ):
 
         super(_ResNetBase, self).__init__()
 
-        self.target_dataset: str = target_dataset
+        self.large_input: bool = large_input
 
         # first transformation layers for different datasets
-        # if you want to run on you onw dataset, you need to write the transformation layers
-        if self.target_dataset in self.imagenet_like_datasets:
+        # since Cifar-like datasets input image is tiny (32*32), it's not feasible to use 7*7 convolution as input transform
+        if self.large_input:
             self.transform = nn.Sequential(
-                nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(7, 7), stride=2, bias=False),
+                nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(7, 7), stride=2, padding=3, bias=False),
                 nn.BatchNorm2d(num_features=64),
                 nn.ReLU(inplace=True),
                 nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
             )
-        elif self.target_dataset in self.cifar_like_dataset:
+        else:
             self.transform = nn.Sequential(
                 nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(3, 3), stride=1, padding=1),
                 nn.BatchNorm2d(num_features=64),
@@ -201,7 +197,14 @@ class _ResNetBase(nn.Module):
             )
 
         # decide block type
-        # block_type = _BasicResidualBlock if target_dataset in self.cifar_like_dataset else _BottleneckResidualBlock
+        if block_type is not None:
+            block_type = _BottleneckResidualBlock if large_input else _BasicResidualBlock
+        
+        # Warn: 我这样写网络是有问题的
+        # Warn: 具体来说：
+        # Warn:     1. 每个layer内的卷积结束的形状是不对的，原文里有一个大表，说了每一个block内的卷积输出的通道数，我没有遵守
+        # Warn:     2. make_layer和BottleNeck都要重写，参考pytorch实现里通过expansion和self.inplane实现的变化
+        assert False, f"Please see the above warnings"
 
         self.stage1 = self._make_stage(
             block_type=block_type,
@@ -247,7 +250,8 @@ class _ResNetBase(nn.Module):
         pooled = self.average_pool(x4)
 
 
-        feature_map = pooled.view(pooled.shape[0], -1)
+        # feature_map = pooled.view(pooled.shape[0], -1)
+        feature_map  = torch.flatten(pooled, start_dim=1)
         if self.num_class is not None:
             # [batch_size, in_features]
             return self.fc(feature_map)
@@ -282,11 +286,11 @@ class _ResNetBase(nn.Module):
 class ResNet18(_ResNetBase):
     __name__ = "ResNet34"
 
-    def __init__(self, num_class: int, target_dataset: str):
+    def __init__(self, num_class: int, large_input: bool):
         assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
         super(ResNet50, self).__init__(
             num_class=num_class,
-            target_dataset=target_dataset,
+            large_input=large_input,
             block_type=_BasicResidualBlock,
             num_blocks=[2, 2, 2, 2],
         )
@@ -300,11 +304,12 @@ class ResNet18(_ResNetBase):
 class ResNet34(_ResNetBase):
     __name__ = "ResNet34"
 
-    def __init__(self, num_class: int, target_dataset: str):
+    def __init__(self, num_class: int, large_input: bool):
         assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
         super(ResNet34, self).__init__(
             num_class=num_class,
-            target_dataset=target_dataset,
+            block_type=_BasicResidualBlock,
+            large_input=large_input,
             num_blocks=[3, 4, 6, 3],
         )
 
@@ -318,11 +323,11 @@ class ResNet34(_ResNetBase):
 class ResNet50(_ResNetBase):
     __name__ = "ResNet34"
 
-    def __init__(self, num_class: int, target_dataset: str):
+    def __init__(self, num_class: int, large_input: bool):
         assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
         super(ResNet50, self).__init__(
             num_class=num_class,
-            target_dataset=target_dataset,
+            large_input=large_input,
             block_type=_BottleneckResidualBlock,
             num_blocks=[3, 4, 6, 3],
         )
@@ -337,11 +342,11 @@ class ResNet50(_ResNetBase):
 class ResNet101(_ResNetBase):
     __name__ = "ResNet34"
 
-    def __init__(self, num_class: int, target_dataset: str):
+    def __init__(self, num_class: int, large_input: bool):
         assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
         super(ResNet101, self).__init__(
             num_class=num_class,
-            target_dataset=target_dataset,
+            large_input=large_input,
             block_type=_BottleneckResidualBlock,
             num_blocks=[3, 4, 23, 3],
         )
@@ -356,11 +361,11 @@ class ResNet101(_ResNetBase):
 class ResNet152(_ResNetBase):
     __name__ = "ResNet34"
 
-    def __init__(self, num_class: int, target_dataset: str):
+    def __init__(self, num_class: int, large_input: bool):
         assert isinstance(num_class, int), f"{Fore.RED}Classification network must specify predicted class nums"
         super(ResNet152, self).__init__(
             num_class=num_class,
-            target_dataset=target_dataset,
+            large_input=large_input,
             block_type=_BottleneckResidualBlock,
             num_blocks=[3, 8, 36, 3],
         )
@@ -412,13 +417,18 @@ if __name__ == "__main__":
     ])
 
     md = MultiDataset(dataset="PascalVOC2012", split="train").set_transform(t)
+    # t.transforms = t.transforms[2:]
+    # md = MultiDataset(dataset="Cifar100", split="train").set_transform(t)
     loader = data.DataLoader(md, batch_size=64, shuffle=True, num_workers=2, pin_memory=True)
 
     # resnet34 = ResNet34(num_class=20, target_dataset=md.dataset).cuda()
-    resnet34 = ResNet50(num_class=20, target_dataset=md.dataset).cuda()
+    resnet34 = ResNet34(num_class=20, large_input=md.dataset)
+    # resnet34 = ResNet50(num_class=20, target_dataset=md.dataset).cuda()
     x: torch.Tensor
     y: torch.Tensor
     for x, y in loader:
-        x, y = x.to(device="cuda:0", non_blocking=True), y.to(device="cuda:0", non_blocking=True)
+        x, y = x, y
+        # x, y = x.to(device="cuda:0", non_blocking=True), y.to(device="cuda:0", non_blocking=True)
         y_pred = resnet34(x)
-        print(y_pred.shape, y_pred.device)
+        print(y_pred.shape)
+        break
