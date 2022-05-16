@@ -12,6 +12,9 @@ Notes:
         9. 自己写的Classification Evaluator一定要在真实环境下测试
 """
 
+
+# Attention: 训练参数参考： https://catalog.ngc.nvidia.com/orgs/nvidia/resources/resnet_50_v1_5_for_pytorch
+
 # Standard Library
 import os
 import re
@@ -317,7 +320,7 @@ class Trainer:
 
     def paper_train(
         self,
-        n_epoch: Optional[int] = 200,
+        n_epoch: Optional[int] = 100,
         early_stop: Optional[int] = 30,
         message: Optional[str] = None
     ) -> _ResNetBase:
@@ -338,15 +341,15 @@ class Trainer:
         train_evaluator = ClassificationEvaluator(dataset=self.train_ds.dataset)
         val_evaluator = ClassificationEvaluator(dataset=self.val_ds.dataset)
         train_loader = data.DataLoader(
-            self.train_ds, batch_size=128, shuffle=True, num_workers=self.num_worker,
+            self.train_ds, batch_size=64, shuffle=True, num_workers=self.num_worker,
             pin_memory=True
         )
         val_loader = data.DataLoader(
-            self.val_ds, batch_size=128, shuffle=False, num_workers=self.num_worker,
+            self.val_ds, batch_size=64, shuffle=False, num_workers=self.num_worker,
             pin_memory=True
         )
         loss_func = nn.CrossEntropyLoss()
-        optimizer = optim.SGD(params=self.network.parameters(), lr=0.01, weight_decay=5e-4, momentum=0.9)
+        optimizer = optim.SGD(params=self.network.parameters(), lr=0.1, weight_decay=1e-4, momentum=0.9)
         self.logger.info(f"{Fore.GREEN}Optim: {optimizer.__class__.__name__}")
         optimizer.zero_grad()
 
@@ -495,8 +498,8 @@ def parse_arg() -> argparse.Namespace:
     parser.add_argument("-d", "--dry_run", dest="dry_run", default=False, action="store_true", help=green("If run without saving tensorboard amd network params to runs and checkpoints"))
     parser.add_argument("-l", "--log", dest="log", default=False, action="store_true", help=green("If save terminal output to log"))
     parser.add_argument("-pt", "--paper_train", dest="paper_train", default=False, action="store_true", help=green("If train the network using paper setting"))
-    parser.add_argument("-ne", "--n_epoch", dest="n_epoch", type=int, default=200, help=yellow("Set maximum training epoch of each task"))
-    parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=50, help=yellow("Set maximum early stop epoch counts"))
+    parser.add_argument("-ne", "--n_epoch", dest="n_epoch", type=int, default=100, help=yellow("Set maximum training epoch of each task"))
+    parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=15, help=yellow("Set maximum early stop epoch counts"))
     parser.add_argument("-lls", "--log_loss_step", dest="log_loss_step", type=int, default=100, help=yellow("Set log loss steps"))
     parser.add_argument("-lce", "--log_confusion_epoch", dest="log_confusion_epoch", type=int, default=10, help=yellow("Set log confusion matrix epochs"))
     parser.add_argument("-ds", "--dataset", dest="dataset", type=str, default="Cifar10", help=blue("Set training datasets"))
@@ -523,7 +526,10 @@ if __name__ == "__main__":
 
     assert dataset in (s:=["Cifar10", "Cifar100", "PascalVOC2012"]), f"{Fore.RED}Invalid Datasets, please select in {s}"
 
-    network = eval(f"{model}")(target_dataset=dataset, num_class=len(ClassLabelLookuper(datasets=dataset).cls))
+    # network = eval(f"{model}")(target_dataset=dataset, num_class=len(ClassLabelLookuper(datasets=dataset).cls))
+    import torchvision.models as m
+    network = m.resnet34(pretrained=False)
+    network.fc = nn.Linear(512, 100)
 
     trainer = Trainer(
         network=network, dataset=dataset, log=log, dry_run=dry_run,
