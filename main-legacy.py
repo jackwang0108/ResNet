@@ -195,7 +195,7 @@ class FullTrainer:
 
 
 if __name__ == "__main__":
-    resnet34 = ResNet34(num_class=100, target_dataset="Cifar100")
+    resnet34 = ResNet34(num_class=100, large_input="Cifar100")
     trained_resnet34 = FullTrainer(network=resnet34, dry_run=False).train(n_epoch=1000, early_stop=200, show_grid=False)
 
     # cprofile
