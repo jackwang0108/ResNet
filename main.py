@@ -32,8 +32,8 @@ import numpy as np
 from colorama import Fore, Style, init
 
 # My Library
-from network import _ResNetBase
-from network import ResNet34, ResNet50, ResNet101, ResNet152
+# from network import _ResNetBase
+# from network import ResNet34, ResNet50, ResNet101, ResNet152
 from datasets import MultiDataset
 from helper import ProjectPath, DatasetPath
 from helper import ClassificationEvaluator, ClassLabelLookuper
@@ -50,7 +50,8 @@ import torchvision.transforms as T
 
 init(autoreset=True)
 
-
+class _ResNetBase:
+    pass
 
 class Trainer:
     start_time: str = datetime.datetime.now().strftime("%Y-%m-%d %H-%M-%S")
@@ -341,11 +342,11 @@ class Trainer:
         train_evaluator = ClassificationEvaluator(dataset=self.train_ds.dataset)
         val_evaluator = ClassificationEvaluator(dataset=self.val_ds.dataset)
         train_loader = data.DataLoader(
-            self.train_ds, batch_size=32, shuffle=True, num_workers=self.num_worker,
+            self.train_ds, batch_size=128, shuffle=True, num_workers=self.num_worker,
             pin_memory=True
         )
         val_loader = data.DataLoader(
-            self.val_ds, batch_size=32, shuffle=False, num_workers=self.num_worker,
+            self.val_ds, batch_size=128, shuffle=False, num_workers=self.num_worker,
             pin_memory=True
         )
         loss_func = nn.CrossEntropyLoss()
@@ -371,14 +372,15 @@ class Trainer:
 
         # train network
         last_best_epoch: List[int] = []
+        last_acc: List[float] = []
         for epoch in range(n_epoch):
             # setup evaluator
             train_evaluator.new_epoch()
             val_evaluator.new_epoch()
 
             # adjust learning rate
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = 0.01 * (n_epoch - epoch) / n_epoch
+            # for param_group in optimizer.param_groups:
+            #     param_group['lr'] = round(0.1 * (n_epoch - epoch) / n_epoch, ndigits=6)
 
             # train
             self.network.train()
@@ -397,7 +399,7 @@ class Trainer:
 
                 # log
                 if self.log and (self.log_loss_step is not None and step % self.log_loss_step == 0):
-                    self.logger.info(f"Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}d}|{n_epoch}], step: {step}, loss: {loss:>.5f}")
+                    self.logger.info(f"Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}d}|{n_epoch}], step: {step}, lr: {optimizer.param_groups[0]['lr']:>.4f}, loss: {loss:>.5f}")
                 if not self.dry_run:
                     if self.log_loss_step is not None and step % self.log_loss_step == 0:
                         self.writer.add_scalar(tag="train-loss", scalar_value=loss.cpu().item(), global_step=step + len(train_loader) * epoch)
@@ -418,6 +420,7 @@ class Trainer:
             
             # early stop
             new_acc = val_evaluator.acc
+            last_acc.append(new_acc[0])
             if max_top1 <= new_acc[0]:
                 early_stop_cnt = 0
                 max_top1 = new_acc[0]
@@ -427,7 +430,7 @@ class Trainer:
                 self.logger.info(
                     f"{Fore.YELLOW}Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}}|{n_epoch}], "\
                     f"new top1 Acc: {Style.BRIGHT}{new_acc[0]:>.5f}{Style.NORMAL}, with top5 Acc:{new_acc[1]:>.5f}, "\
-                    f"lr: {optimizer.param_groups[0]['lr']}, "\
+                    f"lr: {optimizer.param_groups[0]['lr']}, "
                     f"Plateau: [{str(plateau_cnt):>{p_digits}s}|{plateau}]"
                 )
                 if not self.dry_run:
@@ -442,16 +445,15 @@ class Trainer:
                     f"{Fore.GREEN}Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}}|{n_epoch}], "\
                     f"top1 Acc: [{new_acc[0]:>5f}|{Style.BRIGHT}{max_top1:>.5f}{Style.NORMAL}], top5 Acc: [{new_acc[1]:>.5f}|{max_top5:>.5f}], "\
                     f"early_stop_cnt: [{early_stop_cnt:>{es_digits}d}|{early_stop}], "\
-                    f"lr: {optimizer.param_groups[0]['lr']}, "\
+                    f"lr: {optimizer.param_groups[0]['lr']}, "
                     f"Plateau: [{str(plateau_cnt):>{p_digits}s}|{plateau}]"
                 )
 
             # adjust lr after in the plateau
-            if before_stop > 0 and len(last_best_epoch) > 4 and (plateau_cnt := epoch - last_best_epoch[-2]) >= plateau:
+            if before_stop > 0 and ((len(last_best_epoch) > 4 and (plateau_cnt := epoch - last_best_epoch[-2]) >= plateau) or (torch.std(last_acc[-3:])) <= 0.001):
                 before_stop -= 1
                 early_stop_cnt = 0
                 last_best_epoch.extend([epoch] * 3)
-                plateau_cnt = 0
                 for param_group in optimizer.param_groups:
                     param_group["lr"] /= 10
                 self.network.load_state_dict(torch.load(self.checkpoint_path, map_location=self.avaliable_device))
@@ -528,7 +530,8 @@ if __name__ == "__main__":
 
     # network = eval(f"{model}")(target_dataset=dataset, num_class=len(ClassLabelLookuper(datasets=dataset).cls))
     import torchvision.models as m
-    network = m.resnet34(pretrained=True)
+    network = m.resnet34(pretrained=False)
+    # network = m.resnet34(pretrained=True)
     # network.conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(3, 3), stride=1, padding=1)
     network.maxpool  = nn.Sequential()
     network.fc = nn.Linear(512, 100)
