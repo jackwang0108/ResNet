@@ -32,8 +32,7 @@ import numpy as np
 from colorama import Fore, Style, init
 
 # My Library
-# from network import _ResNetBase
-# from network import ResNet34, ResNet50, ResNet101, ResNet152
+from network import ResNet
 from datasets import MultiDataset
 from helper import ProjectPath, DatasetPath
 from helper import ClassificationEvaluator, ClassLabelLookuper
@@ -66,7 +65,14 @@ class Trainer:
         T.CenterCrop(size=(224, 224)),
         T.RandomHorizontalFlip(),
         T.ColorJitter(),
-        # T.RandomAffine(degrees=(0, 50), translate=(0.1, 0.3), scale=(0.6, 0.9)),
+        T.RandomAffine(degrees=(0, 30), translate=(0.1, 0.3), scale=(0.6, 0.9)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    test_T = T.Compose([
+        T.Resize(size=(256)),
+        T.CenterCrop(size=(224, 224)),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -83,31 +89,31 @@ class Trainer:
         dry_run: Optional[bool] = True,
         cifar: Optional[bool] = False,
         log_loss_step: Optional[int] = None,
-        log_confusion_epoch: Optional[int] = None
     ) -> None:
 
         # save param
         self.log = log
         self.dataset: str = dataset
         self.dry_run: bool = dry_run
-        self.cifar: bool = cifar
+        self.tiny_image: bool = cifar
         self.log_loss_step: Union[None, int] = log_loss_step
-        self.log_confusion_epoch: Union[None, int] = log_confusion_epoch
         self.network: _ResNetBase = network.to(
             self.avaliable_device, non_blocking=True)
 
         # make file suffix
-        suffix = self.dataset + "/" + self.network.__class__.__name__
+        suffix = self.dataset + "/" + self.network.name
 
         # dataset
         # remove transform first
-        if self.cifar:
+        if self.tiny_image:
             self.train_T.transforms = self.train_T.transforms[2:]
+            self.test_T.transforms = self.test_T.transforms[2:]
+            print("Training with tiny image, skip first two transform")
         self.train_ds = MultiDataset(dataset=self.dataset, split="train").set_transform(
             self.train_T
         )
         self.val_ds = MultiDataset(dataset=self.dataset, split="val").set_transform(
-            self.train_T
+            self.test_T
         )
 
         # log
@@ -146,6 +152,8 @@ class Trainer:
                 f"{Fore.GREEN}Save checkpoint to {self.checkpoint_path.relative_to(ProjectPath.base)}")
             self.checkpoint_path.parent.mkdir(parents=True)
         
+        self.logger.info(f"{Fore.GREEN}Training with {'tiny' if self.tiny_image else 'large'} image{', skip first two transform' if self.tiny_image else ''}")
+
         atexit.register(self._cleanup)
 
     def _cleanup(self):
@@ -175,17 +183,19 @@ class Trainer:
 
     def modern_train(
         self, 
+        bsize: Optional[int] = 32,
         lr: Optional[float] = 1e-3,
-        n_epoch: Optional[int] = 200,
-        early_stop: Optional[int] = 30,
+        n_epoch: Optional[int] = 100,
+        early_stop: Optional[int] = 7,
         message: Optional[str] = None
     ) -> _ResNetBase:
         # log training digest
         msg = "Start Training".center(self.max_col, "+")
         self.logger.info(f"{Fore.GREEN}" + msg)
         self.logger.info(f"{Fore.GREEN}Training Digest: {message}")
-        self.logger.info(f"{Fore.GREEN}{self.network.__class__.__name__} training with modern setup")
+        self.logger.info(f"{Fore.GREEN}{self.network.name} training with modern setup")
         self.logger.info(f"{Fore.GREEN}lr: {lr}")
+        self.logger.info(f"{Fore.GREEN}bsize: {bsize}")
         self.logger.info(f"{Fore.GREEN}e_poech: {n_epoch}")
         self.logger.info(f"{Fore.GREEN}early_stop: {early_stop}")
         self.logger.info(f"{Fore.GREEN}datasets: {self.train_ds.dataset}")
@@ -198,11 +208,11 @@ class Trainer:
         train_evaluator = ClassificationEvaluator(dataset=self.train_ds.dataset)
         val_evaluator = ClassificationEvaluator(dataset=self.val_ds.dataset)
         train_loader = data.DataLoader(
-            self.train_ds, batch_size=128, shuffle=True, num_workers=self.num_worker,
+            self.train_ds, batch_size=bsize, shuffle=True, num_workers=self.num_worker,
             pin_memory=True
         )
         val_loader = data.DataLoader(
-            self.val_ds, batch_size=128, shuffle=False, num_workers=self.num_worker,
+            self.val_ds, batch_size=bsize, shuffle=False, num_workers=self.num_worker,
             pin_memory=True
         )
         loss_func = nn.CrossEntropyLoss()
@@ -303,14 +313,6 @@ class Trainer:
                     global_step=epoch
                 )
 
-            # print confusion matrix
-            # if self.log_confusion_epoch is not None and epoch % self.log_confusion_epoch == 0:
-            #     table = val_evaluator.get_confusion(top=5, title=f"Top 5 Confusion Matrix of dataset {self.dataset}")
-            #     if self.log:
-            #         self.logger.info(str(table))
-            #     else:
-            #         print(table)
-
             # check early stop
             if early_stop_cnt >= early_stop:
                 self.logger.info(f"{Fore.YELLOW}Early Stopped at epoch: {epoch}!")
@@ -321,15 +323,17 @@ class Trainer:
 
     def paper_train(
         self,
+        bsize: Optional[int] = 32,
         n_epoch: Optional[int] = 100,
-        early_stop: Optional[int] = 30,
+        early_stop: Optional[int] = 7,
         message: Optional[str] = None
     ) -> _ResNetBase:
         # log training digest
         msg = "Start Training".center(self.max_col, "+")
         self.logger.info(f"{Fore.GREEN}" + msg)
         self.logger.info(f"{Fore.GREEN}Training Digest: {message}")
-        self.logger.info(f"{Fore.GREEN}training with paper setup")
+        self.logger.info(f"{Fore.GREEN}{self.network.name} training with paper setup")
+        self.logger.info(f"{Fore.GREEN}bsize: {bsize}")
         self.logger.info(f"{Fore.GREEN}e_poech: {n_epoch}")
         self.logger.info(f"{Fore.GREEN}early_stop: {early_stop}")
         self.logger.info(f"{Fore.GREEN}datasets: {self.train_ds.dataset}")
@@ -342,11 +346,11 @@ class Trainer:
         train_evaluator = ClassificationEvaluator(dataset=self.train_ds.dataset)
         val_evaluator = ClassificationEvaluator(dataset=self.val_ds.dataset)
         train_loader = data.DataLoader(
-            self.train_ds, batch_size=32, shuffle=True, num_workers=self.num_worker,
+            self.train_ds, batch_size=bsize, shuffle=True, num_workers=self.num_worker,
             pin_memory=True
         )
         val_loader = data.DataLoader(
-            self.val_ds, batch_size=32, shuffle=False, num_workers=self.num_worker,
+            self.val_ds, batch_size=bsize, shuffle=False, num_workers=self.num_worker,
             pin_memory=True
         )
         loss_func = nn.CrossEntropyLoss()
@@ -377,10 +381,6 @@ class Trainer:
             # setup evaluator
             train_evaluator.new_epoch()
             val_evaluator.new_epoch()
-
-            # adjust learning rate
-            # for param_group in optimizer.param_groups:
-            #     param_group['lr'] = round(0.1 * (n_epoch - epoch) / n_epoch, ndigits=6)
 
             # train
             self.network.train()
@@ -430,7 +430,7 @@ class Trainer:
                 self.logger.info(
                     f"{Fore.YELLOW}Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}}|{n_epoch}], "\
                     f"new top1 Acc: {Style.BRIGHT}{new_acc[0]:>.5f}{Style.NORMAL}, with top5 Acc:{new_acc[1]:>.5f}, "\
-                    f"lr: {optimizer.param_groups[0]['lr']}, "
+                    f"lr: {optimizer.param_groups[0]['lr']:>.6f}, "
                     f"Plateau: [{str(plateau_cnt):>{p_digits}s}|{plateau}]"
                 )
                 if not self.dry_run:
@@ -445,7 +445,7 @@ class Trainer:
                     f"{Fore.GREEN}Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}}|{n_epoch}], "\
                     f"top1 Acc: [{new_acc[0]:>5f}|{Style.BRIGHT}{max_top1:>.5f}{Style.NORMAL}], top5 Acc: [{new_acc[1]:>.5f}|{max_top5:>.5f}], "\
                     f"early_stop_cnt: [{early_stop_cnt:>{es_digits}d}|{early_stop}], "\
-                    f"lr: {optimizer.param_groups[0]['lr']}, "
+                    f"lr: {optimizer.param_groups[0]['lr']:>.6f}, "
                     f"Plateau: [{str(plateau_cnt):>{p_digits}s}|{plateau}]"
                 )
 
@@ -458,7 +458,7 @@ class Trainer:
                     param_group["lr"] /= 10
                 self.network.load_state_dict(torch.load(self.checkpoint_path, map_location=self.avaliable_device))
                 before = optimizer.param_groups[0]["lr"] * 10
-                self.logger.info(f"{Fore.GREEN}Decrease lr at epoch: {epoch}, from {before_stop} to {before / 10}, switch to best model, max top1 Acc: {max_top1}")
+                self.logger.info(f"{Fore.GREEN}Decrease lr at epoch: {epoch}, from {before:>.6f} to {before / 10:>.6f}, switch to best model, max top1 Acc: {max_top1}")
             
             if early_stop <= 0:
                 plateau_cnt = "NA"
@@ -480,14 +480,6 @@ class Trainer:
                 self.logger.info(f"{Fore.MAGENTA}Early Stopped at epoch: {epoch}")
                 break
 
-            # print confusion matrix
-            # if self.log_confusion_epoch is not None and epoch % self.log_confusion_epoch == 0:
-            #     table = val_evaluator.get_confusion(top=5, title=f"Top 5 Confusion Matrix of dataset {self.dataset}")
-            #     if self.log:
-            #         self.logger.info(str(table))
-            #     else:
-            #         print(table)
-
         return self.network
 
 def parse_arg() -> argparse.Namespace:
@@ -496,17 +488,19 @@ def parse_arg() -> argparse.Namespace:
     def blue(s): return f"{Fore.BLUE}{Style.BRIGHT}{s}{Style.RESET_ALL}"
 
     parser = argparse.ArgumentParser(description=blue("ResNet Pytorch Implementation training util by Shihong Wang (Jack3Shihong@gmail.com)"))
-    parser.add_argument("-v", "--version", action="version", version="%(prog)s v2.0, fixed training bugs, but there's still GPU memory leak problem")
+    parser.add_argument("-v", "--version", action="version", version="%(prog)s v3.0, fixed training bugs, but there's still GPU memory leak problem")
     parser.add_argument("-d", "--dry_run", dest="dry_run", default=False, action="store_true", help=green("If run without saving tensorboard amd network params to runs and checkpoints"))
     parser.add_argument("-l", "--log", dest="log", default=False, action="store_true", help=green("If save terminal output to log"))
+    parser.add_argument("-tm", "--torch_model", dest="torch_model", default=False, action="store_true", help=green("If use pytorch implementation"))
     parser.add_argument("-pt", "--paper_train", dest="paper_train", default=False, action="store_true", help=green("If train the network using paper setting"))
+    parser.add_argument("-bz", "--bsize", dest="bsize", type=int, default=32, help=yellow("Set batch size"))
     parser.add_argument("-ne", "--n_epoch", dest="n_epoch", type=int, default=100, help=yellow("Set maximum training epoch of each task"))
-    parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=15, help=yellow("Set maximum early stop epoch counts"))
+    parser.add_argument("-es", "--early_stop", dest="early_stop", type=int, default=7, help=yellow("Set maximum early stop epoch counts"))
+    parser.add_argument("-md", "--model", dest="model", type=int, default=34, help=blue("Set training model: resnet18/34/52/101/152"))
     parser.add_argument("-lls", "--log_loss_step", dest="log_loss_step", type=int, default=100, help=yellow("Set log loss steps"))
-    parser.add_argument("-lce", "--log_confusion_epoch", dest="log_confusion_epoch", type=int, default=10, help=yellow("Set log confusion matrix epochs"))
     parser.add_argument("-ds", "--dataset", dest="dataset", type=str, default="Cifar10", help=blue("Set training datasets"))
-    parser.add_argument("-md", "--model", dest="model", type=str, default="ResNet34", help=blue("Set training model: ResNet18/34/52/101"))
-    parser.add_argument("-m", "--message", dest="message", type=str, default=f"", help=blue("Training digest"))
+    parser.add_argument("-p", "--pretrained", dest="pretrained", type=Path, default=None, help=blue("Select pretrain parameter"))
+    parser.add_argument("-m", "--message", dest="message", type=str, default=f"", help=blue("Set training digest"))
     return parser.parse_args()
 
 
@@ -518,41 +512,50 @@ if __name__ == "__main__":
     log: bool = args.log
     dry_run: bool = args.dry_run
     paper_train: bool = args.paper_train
+    bsize: int = args.bsize
     n_epoch: int = args.n_epoch
     early_stop: int = args.early_stop
     log_loss_step: int = args.log_loss_step
-    log_confusion_epoch: int = args.log_confusion_epoch
     messgae: str = args.message
     model: str = args.model
     dataset: str = args.dataset
+    pretrained: Path = args.pretrained
+    torch_model: bool = args.torch_model
 
     assert dataset in (s:=["Cifar10", "Cifar100", "PascalVOC2012"]), f"{Fore.RED}Invalid Datasets, please select in {s}"
 
-    # network = eval(f"{model}")(target_dataset=dataset, num_class=len(ClassLabelLookuper(datasets=dataset).cls))
-    import torchvision.models as m
-    # network = m.resnet34(pretrained=False)
-    # network = m.resnet34(pretrained=True)
-    # network.conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(3, 3), stride=1, padding=1)
-    # network.maxpool  = nn.Sequential()
-    # network.fc = nn.Linear(512, 100)
-    # network.load_state_dict(torch.load(str(ProjectPath.checkpoints.joinpath("Cifar100/ResNet/2022-05-16 14-17-54/best.pt"))))
+    ccn = ClassLabelLookuper(datasets=dataset)
+    if dataset in ["Cifar10", "Cifar100"]:
+        tiny_image = True
+    else:
+        tiny_image = False
+    
+    if torch_model and pretrained is not None:
+        pretrained = True
+    elif pretrained is not None:
+        pretrained = Path(pretrained)
 
-    from network import ResNet
-    network = ResNet.resnet34(num_class=100, tiny_image=True, torch_model=False, pretrained=False)
+    network = eval(f"ResNet.resnet{model}")(
+        num_class=len(ccn.cls), 
+        tiny_image=tiny_image, 
+        torch_model=torch_model, 
+        pretrained=pretrained
+    )
 
     trainer = Trainer(
-        network=network, dataset=dataset, log=log, dry_run=dry_run,
+        network=network, dataset=dataset, log=log, dry_run=dry_run, cifar=tiny_image,
         log_loss_step=log_loss_step,
-        log_confusion_epoch=log_confusion_epoch
     )
 
     if paper_train:
         network = trainer.paper_train(
+            bsize=bsize,
             n_epoch=n_epoch, early_stop=early_stop,
             message=messgae
         )
     else:
         network = trainer.modern_train(
+            bsize=bsize,
             lr=1e-3, n_epoch=n_epoch, early_stop=early_stop,
             message=messgae
         )
