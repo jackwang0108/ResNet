@@ -159,7 +159,7 @@ class BottleneckBlock(nn.Module):
 
         self.with_prjection = with_projection
         if with_projection is None:
-            self.with_prjection = True if in_channels != feature_channels or stride == 2 else False
+            self.with_prjection = True if in_channels != feature_channels * self.expansion or stride == 2 else False
         
         if self.with_prjection:
             self.projection = nn.Sequential(
@@ -262,10 +262,17 @@ class ResNet(nn.Module):
                 "layer2": self.network.layer2,
                 "layer3": self.network.layer3,
                 "layer4": self.network.layer4,
-                "layer5": self.network.avgpool,
                 "avgpool": self.network.avgpool
             }))
             self.classifier = self.network.fc
+
+        # Pytorch init
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv2d):
+        #         nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+        #     elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+        #         nn.init.constant_(m.weight, 1)
+        #         nn.init.constant_(m.bias, 0)
     
     def _make_layer(
         self, 
@@ -284,7 +291,10 @@ class ResNet(nn.Module):
         layers = []
 
         # first block is a downsample block, which uses stride of 2
-        layers.append(block_type(in_channels=in_channels, feature_channels=feature_channel, stride=2))
+        # do not use downsample in the first block of first layer, this is known as resnet v1.5
+        # and is especially good for tiny imput image
+        layers.append(block_type(in_channels=in_channels, feature_channels=feature_channel, stride=1 if feature_channel == 64 else 2))
+        # layers.append(block_type(in_channels=in_channels, feature_channels=feature_channel, stride=2))
 
         for block_idx in range(num_block):
             # first block of the layer has beed added
@@ -464,7 +474,7 @@ if __name__ == "__main__":
     # test resnet
     tiny = torch.randn(8, 3, 32, 32)
     large = torch.randn(8, 3, 224, 224)
-    resnet = ResNet.resnet152(num_class=10, tiny_image=False, torch_model=False, pretrained=False)
+    resnet = ResNet.resnet50(num_class=100, tiny_image=True, torch_model=True, pretrained=False)
     print(resnet)
-    print(resnet(large).shape)
+    print(resnet(tiny).shape)
 

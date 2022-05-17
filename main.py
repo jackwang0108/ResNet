@@ -88,6 +88,7 @@ class Trainer:
         log: Optional[bool] = True,
         dry_run: Optional[bool] = True,
         cifar: Optional[bool] = False,
+        skip: Optional[bool] = False,
         log_loss_step: Optional[int] = None,
     ) -> None:
 
@@ -105,7 +106,7 @@ class Trainer:
 
         # dataset
         # remove transform first
-        if self.tiny_image:
+        if self.tiny_image and skip:
             self.train_T.transforms = self.train_T.transforms[2:]
             self.test_T.transforms = self.test_T.transforms[2:]
             print("Training with tiny image, skip first two transform")
@@ -491,6 +492,7 @@ def parse_arg() -> argparse.Namespace:
     parser.add_argument("-v", "--version", action="version", version="%(prog)s v3.0, fixed training bugs, but there's still GPU memory leak problem")
     parser.add_argument("-d", "--dry_run", dest="dry_run", default=False, action="store_true", help=green("If run without saving tensorboard amd network params to runs and checkpoints"))
     parser.add_argument("-l", "--log", dest="log", default=False, action="store_true", help=green("If save terminal output to log"))
+    parser.add_argument("-s", "--skip", dest="skip", default=False, action="store_true", help=green("If skip first two transforms"))
     parser.add_argument("-tm", "--torch_model", dest="torch_model", default=False, action="store_true", help=green("If use pytorch implementation"))
     parser.add_argument("-pt", "--paper_train", dest="paper_train", default=False, action="store_true", help=green("If train the network using paper setting"))
     parser.add_argument("-bz", "--bsize", dest="bsize", type=int, default=32, help=yellow("Set batch size"))
@@ -521,6 +523,7 @@ if __name__ == "__main__":
     dataset: str = args.dataset
     pretrained: Path = args.pretrained
     torch_model: bool = args.torch_model
+    skip: bool = args.skip
 
     assert dataset in (s:=["Cifar10", "Cifar100", "PascalVOC2012"]), f"{Fore.RED}Invalid Datasets, please select in {s}"
 
@@ -537,14 +540,14 @@ if __name__ == "__main__":
 
     network = eval(f"ResNet.resnet{model}")(
         num_class=len(ccn.cls), 
-        tiny_image=tiny_image, 
+        tiny_image=tiny_image and skip, 
         torch_model=torch_model, 
         pretrained=pretrained
     )
 
     trainer = Trainer(
         network=network, dataset=dataset, log=log, dry_run=dry_run, cifar=tiny_image,
-        log_loss_step=log_loss_step,
+        log_loss_step=log_loss_step, skip=skip
     )
 
     if paper_train:
