@@ -222,7 +222,6 @@ class ResNet(nn.Module):
             feature_channel = 64
             in_channel = 64
             for i in range(4):
-                print(feature_channel)
                 self.__dict__[f"layer{i+1}"] = self._make_layer(
                     block_type=block_type,
                     num_block=num_blocks[i],
@@ -418,7 +417,7 @@ class ResNet(nn.Module):
         if torch_model:
             network = ResNet._get_torch_model(resnet152, num_class, tiny_image, pretrained, expansion=4)
             obj = cls(num_class=num_class, tiny_image=tiny_image, torch_model=network)
-            obj.name = "ResNet34"
+            obj.name = "ResNet152"
             return obj
         else:
             assert pretrained is None or not pretrained or isinstance(pretrained, Path), f"{Fore.RED}Please offer pre-trained parameter path"
