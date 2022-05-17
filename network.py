@@ -1,10 +1,12 @@
 # Torch Library
 import torch
 import torch.nn as nn
+from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
 
 # Standard Library
 from typing import *
 from pathlib import Path
+from collections import OrderedDict
 
 # Third-Party Library
 from colorama import Fore, Style, init
@@ -46,20 +48,20 @@ class BasicBlock(nn.Module):
         stride: Optional[int] = 1,
         with_projection: Optional[bool] = None
     ) -> None:
-        assert in_channels == feature_channels, f"{Fore.RED}BasicBuildBlock do not change input and output channels"
+        # assert in_channels == feature_channels, f"{Fore.RED}BasicBuildBlock do not change input and output channels"
         super(BasicBlock, self).__init__()
 
         # Residual Path
         self.residual_path = nn.Sequential(
             nn.Conv2d(
-                in_channels=in_channels, out_channels=in_channels,
+                in_channels=in_channels, out_channels=feature_channels,
                 kernel_size=3, stride=stride, padding=1,
                 bias=False
             ),
             nn.BatchNorm2d(feature_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(
-                in_channels=in_channels, out_channels=feature_channels,
+                in_channels=feature_channels, out_channels=feature_channels,
                 kernel_size=3, stride=1, padding=1,
                 bias=False
             ),
@@ -135,24 +137,24 @@ class BottleneckBlock(nn.Module):
         # Residual Path
         self.residual_path = nn.Sequential(
             nn.Conv2d(
-                in_channels=in_channels, out_channels=64,
+                in_channels=in_channels, out_channels=feature_channels,
                 kernel_size=1, stride=1, padding=0,
                 bias=False
             ),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(feature_channels),
             nn.Conv2d(
-                in_channels=64, out_channels=64,
+                in_channels=feature_channels, out_channels=feature_channels,
                 kernel_size=3, stride=stride, padding=1,
                 bias=False
             ),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(feature_channels),
             nn.Conv2d(
-                in_channels=64, out_channels=feature_channels * self.expansion,
+                in_channels=feature_channels, out_channels=feature_channels * self.expansion,
                 kernel_size=1, stride=1, padding=0,
                 bias=False
-            )
+            ),
+            nn.BatchNorm2d(feature_channels * self.expansion),
+            nn.ReLU(inplace=True),
         )
 
         self.with_prjection = with_projection
@@ -180,26 +182,290 @@ class BottleneckBlock(nn.Module):
         return self.output_relu(hx)
 
 
-if __name__ == "__main__":
-    x = torch.randn(32, 64, 224, 224)
+class ResNet(nn.Module):
+
+    def __init__(
+        self,
+        num_class: int,
+        tiny_image: Optional[bool] = False,
+        num_blocks: List[int] = None,
+        block_type: Type[Union[BasicBlock, BottleneckBlock]] = None,
+        torch_model: Optional[nn.Module] = None
+    ) -> None:
+        super(ResNet, self).__init__()
+        self.name = "ResNet"
+        # contruct my model
+        if torch_model is None:
+            assert not (num_blocks is None or block_type is None), f"{Fore.RED}You must specify block type and num_block, "\
+                                                                f"or you should initialize via api like ResNet.resNet50()"
+            # input transform
+            if tiny_image:
+                self.input_transform = nn.Sequential(
+                    nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(3, 3), stride=1, padding=1),
+                    nn.BatchNorm2d(num_features=64),
+                    nn.ReLU(inplace=True),
+                    nn.Sequential()
+                )
+            else:
+                self.input_transform = nn.Sequential(
+                    nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(7, 7), stride=2, padding=3, bias=False),
+                    nn.BatchNorm2d(num_features=64),
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+                )
+            
+            # body
+            self.layer1: nn.Sequential
+            self.layer2: nn.Sequential
+            self.layer3: nn.Sequential
+            self.layer4: nn.Sequential
+            feature_channel = 64
+            in_channel = 64
+            for i in range(4):
+                print(feature_channel)
+                self.__dict__[f"layer{i+1}"] = self._make_layer(
+                    block_type=block_type,
+                    num_block=num_blocks[i],
+                    feature_channel=feature_channel,
+                    in_channels=in_channel
+                )
+                in_channel = feature_channel * block_type.expansion
+                feature_channel *= 2
+            self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+            self.feature_extractor = nn.Sequential(OrderedDict({
+                "input_transform": self.input_transform,
+                "layer1": self.layer1,
+                "layer2": self.layer2,
+                "layer3": self.layer3,
+                "layer4": self.layer4,
+                "avgpool": self.avgpool
+            }))
+
+            # prediction layer
+            # in paper, resnet18/34 final layer feature channel is 512, and output channel is 512 (adaptive 1x1 2d pooled)
+            # while resnet50/101/152 final layer feature channel is 512, output channel is 2048 (adaptive 1x1 2d pooled)
+            # so, input feature vector should have 512 * 1/4 features, and expandsion of BasicBlock/Bottleneck represents
+            # the expansion of last layer feature channel to output channel
+            self.classifier = nn.Linear(in_features=512 * block_type.expansion, out_features=num_class)
+        else:
+            # contruct torch model
+            self.num_class = num_class
+            self.network = torch_model
+            self.input_transform = nn.Sequential(
+                self.network.conv1,
+                self.network.bn1,
+                self.network.relu,
+                self.network.maxpool
+            )
+            self.feature_extractor = nn.Sequential(OrderedDict({
+                "input_transform": self.input_transform,
+                "layer1": self.network.layer1,
+                "layer2": self.network.layer2,
+                "layer3": self.network.layer3,
+                "layer4": self.network.layer4,
+                "layer5": self.network.avgpool,
+                "avgpool": self.network.avgpool
+            }))
+            self.classifier = self.network.fc
     
-    # Test Basic Layer
-    # downsample layer
-    bb_downsample = BasicBlock(in_channels=64, feature_channels=64, stride=2)
-    # normal layer
-    bb_normal = BasicBlock(in_channels=64, feature_channels=64, stride=1)
-    # Attention: projection layer will never be used for BasicBlock
-    # bb_projection = BasicBlock(in_channels=128, feature_channels=)
-    print(bb_downsample(x).shape)
-    print(bb_normal(x).shape)
+    def _make_layer(
+        self, 
+        num_block: int,
+        in_channels: int,
+        feature_channel: int,
+        block_type: Type[Union[BasicBlock, BottleneckBlock]],
+    ) -> nn.Sequential:
+        # # feature channel == in channel is only in layer1
+        # if feature_channel == in_channels:
+        #     dowm_channel_ratio = 1
+        # else:
+        #     dowm_channel_ratio = 1
+
+        # building layers
+        layers = []
+
+        # first block is a downsample block, which uses stride of 2
+        layers.append(block_type(in_channels=in_channels, feature_channels=feature_channel, stride=2))
+
+        for block_idx in range(num_block):
+            # first block of the layer has beed added
+            if block_idx == 0:
+                continue
+            layers.append(
+                block_type(
+                    in_channels=feature_channel * block_type.expansion,
+                    feature_channels=feature_channel,
+                    stride=1,
+                    with_projection=False
+                )
+            )
+        return nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feature_vector: torch.Tensor = self.feature_extractor(x).flatten(start_dim=1)
+        possibility_vector: torch.Tensor = self.classifier(feature_vector)
+        return possibility_vector
+    
+    @staticmethod
+    def _get_torch_model(
+        network_func: Callable, 
+        num_class: int, 
+        tiny_image: bool, 
+        pretrained: Optional[Union[Path, bool]],
+        expansion: int = 1,
+    ):
+        # load pretrained network
+        if isinstance(pretrained, bool):
+            network = network_func(pretrained=pretrained)
+        else:
+            network = network_func()
+            if pretrained is not None:
+                network.load_state_dict(torch.load(pretrained))
+        # remove conv1 (ksize=7) and maxpool to preserve the input
+        if tiny_image:
+            conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1)
+            maxpool = nn.Sequential()
+            network.conv1 = conv1
+            network.maxpool = maxpool
+        # change prediction layer
+        if num_class != 1000:
+            fc = nn.Linear(512 * expansion, out_features=num_class)
+            network.fc = fc
+        return network
+
+    @classmethod
+    def resnet18(cls, num_class: int, tiny_image: bool, torch_model: bool, pretrained: Optional[Union[Path, bool]] = None):
+        if torch_model:
+            network = ResNet._get_torch_model(resnet18, num_class, tiny_image, pretrained)
+            obj = cls(num_class=num_class, tiny_image=tiny_image, torch_model=network)
+            obj.name = "ResNet18"
+            return obj
+        else:
+            assert pretrained is None or not pretrained or isinstance(pretrained, Path), f"{Fore.RED}Please offer pre-trained parameter path"
+            network = cls(
+                num_class=num_class, tiny_image=tiny_image,
+                num_blocks=[2, 2, 2, 2],
+                block_type=BasicBlock,
+                torch_model=None
+            )
+            if pretrained is not None and pretrained:
+                network.load_state_dict(torch.load(pretrained))
+            network.name = "ResNet18"
+            return network
+    
+    @classmethod
+    def resnet34(cls, num_class: int, tiny_image: bool, torch_model: bool, pretrained: Optional[Union[Path, bool]] = None):
+        if torch_model:
+            network = ResNet._get_torch_model(resnet34, num_class, tiny_image, pretrained)
+            obj = cls(num_class=num_class, tiny_image=tiny_image, torch_model=network)
+            obj.name = "ResNet34"
+            return obj
+        else:
+            assert pretrained is None or not pretrained or isinstance(pretrained, Path), f"{Fore.RED}Please offer pre-trained parameter path"
+            network = cls(
+                num_class=num_class, tiny_image=tiny_image,
+                num_blocks=[3, 4, 6, 3],
+                block_type=BasicBlock,
+                torch_model=None
+            )
+            if pretrained is not None and pretrained:
+                network.load_state_dict(torch.load(pretrained))
+            network.name = "ResNet34"
+            return network
+
+    @classmethod
+    def resnet50(cls, num_class: int, tiny_image: bool, torch_model: bool, pretrained: Optional[Union[Path, bool]] = None):
+        if torch_model:
+            network = ResNet._get_torch_model(resnet50, num_class, tiny_image, pretrained, expansion=4)
+            obj = cls(num_class=num_class, tiny_image=tiny_image, torch_model=network)
+            obj.name = "ResNet50"
+            return obj
+        else:
+            assert pretrained is None or not pretrained or isinstance(pretrained, Path), f"{Fore.RED}Please offer pre-trained parameter path"
+            network = cls(
+                num_class=num_class, tiny_image=tiny_image,
+                num_blocks=[3, 4, 6, 3],
+                block_type=BottleneckBlock,
+                torch_model=None
+            )
+            if pretrained is not None and pretrained:
+                    network.load_state_dict(torch.load(pretrained))
+            network.name = "ResNet50"
+            return network
+
+    @classmethod
+    def resnet101(cls, num_class: int, tiny_image: bool, torch_model: bool, pretrained: Optional[Union[Path, bool]] = None):
+        if torch_model:
+            network = ResNet._get_torch_model(resnet101, num_class, tiny_image, pretrained, expansion=4)
+            obj = cls(num_class=num_class, tiny_image=tiny_image, torch_model=network)
+            obj.name = "ResNet101"
+            return obj
+        else:
+            assert pretrained is None or not pretrained or isinstance(pretrained, Path), f"{Fore.RED}Please offer pre-trained parameter path"
+            network = cls(
+                num_class=num_class, tiny_image=tiny_image,
+                num_blocks=[3, 4, 23, 3],
+                block_type=BottleneckBlock,
+                torch_model=None
+            )
+            if pretrained is not None and pretrained:
+                network.load_state_dict(torch.load(pretrained))
+            network.name = "ResNet101"
+            return network
+
+    @classmethod
+    def resnet152(cls, num_class: int, tiny_image: bool, torch_model: bool, pretrained: Optional[Union[Path, bool]] = None):
+        if torch_model:
+            network = ResNet._get_torch_model(resnet152, num_class, tiny_image, pretrained, expansion=4)
+            obj = cls(num_class=num_class, tiny_image=tiny_image, torch_model=network)
+            obj.name = "ResNet34"
+            return obj
+        else:
+            assert pretrained is None or not pretrained or isinstance(pretrained, Path), f"{Fore.RED}Please offer pre-trained parameter path"
+            network = cls(
+                num_class=num_class, tiny_image=tiny_image,
+                num_blocks=[3, 8, 36, 3],
+                block_type=BottleneckBlock,
+                torch_model=None
+            )
+            if pretrained is not None and pretrained:
+                network.load_state_dict(torch.load(pretrained))
+            network.name = "ResNet152"
+            return network
+
+
+if __name__ == "__main__":
+    # # Test Basic Block
+    # x1 = torch.randn(32, 64, 224, 224)
+    # # Attention: downsample block is the first block in the layer 2 for resnet18/34
+    # bb_downsample = BasicBlock(in_channels=64, feature_channels=64, stride=2)
+    # # Attention: normal block is the rest block in the layer 2/3/4/5 for resnet18/34
+    # bb_normal = BasicBlock(in_channels=64, feature_channels=64, stride=1)
+    # # Attention: inflation downsample block is the actually first block in the layer 3/4/5 for resnet18/34
+    # bb_inflation_downsample = BasicBlock(in_channels=64, feature_channels=128, stride=2)
+    # print(bb_downsample(x1).shape)
+    # print(bb_normal(x1).shape)
+    # print(bb_inflation(x1).shape)
+    # print(bb_inflation_downsample(x1).shape)
 
     # Test Bottleneck Layer
-    # downsample layer
-    bb_downsample = BottleneckBlock(in_channels=64, feature_channels=64, stride=2)
-    # Attention: normal layer will never be used for BottleneckBlock
-    # bb_normal = BottleneckBlock(in_channels=64, feature_channels=64, stride=1, with_projection=True)
-    # projection layer
-    bb_projection = BottleneckBlock(in_channels=64, feature_channels=64, stride=1, with_projection=True)
-    # downsample layer
-    print(bb_downsample(x).shape)
-    print(bb_normal(x).shape)
+    # x1 = torch.randn(32, 64, 224, 224)
+    # x2 = torch.randn(32, 256, 112, 112, device="cuda:0")
+    # # Attention: downsample block is the first block in the layer 2 for resnet50/101/152
+    # bb_downsample = BottleneckBlock(in_channels=64, feature_channels=64, stride=2)
+    # # Attention: dowsample channel at 4 times is the block within layers for resnet50/101/152
+    # bb_downsample_channel_wi_layer = BottleneckBlock(in_channels=256, feature_channels=64, stride=1).cuda()
+    # # Attention: downsample channel block is the first block for resnet50/101/152 between layers
+    # bb_downsample_channel_bt_layer = BottleneckBlock(in_channels=256, feature_channels=128, stride=1).cuda()
+    # down sample ch
+    # print(bb_downsample(x1).shape)
+    # print(bb_downsample_channel_wi_layer(x2).shape)
+    # print(bb_downsample_channel_bt_layer(x2).shape)
+
+    # test resnet
+    tiny = torch.randn(8, 3, 32, 32)
+    large = torch.randn(8, 3, 224, 224)
+    resnet = ResNet.resnet152(num_class=10, tiny_image=False, torch_model=False, pretrained=False)
+    print(resnet)
+    print(resnet(large).shape)
+
