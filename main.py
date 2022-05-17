@@ -342,11 +342,11 @@ class Trainer:
         train_evaluator = ClassificationEvaluator(dataset=self.train_ds.dataset)
         val_evaluator = ClassificationEvaluator(dataset=self.val_ds.dataset)
         train_loader = data.DataLoader(
-            self.train_ds, batch_size=128, shuffle=True, num_workers=self.num_worker,
+            self.train_ds, batch_size=32, shuffle=True, num_workers=self.num_worker,
             pin_memory=True
         )
         val_loader = data.DataLoader(
-            self.val_ds, batch_size=128, shuffle=False, num_workers=self.num_worker,
+            self.val_ds, batch_size=32, shuffle=False, num_workers=self.num_worker,
             pin_memory=True
         )
         loss_func = nn.CrossEntropyLoss()
@@ -530,12 +530,15 @@ if __name__ == "__main__":
 
     # network = eval(f"{model}")(target_dataset=dataset, num_class=len(ClassLabelLookuper(datasets=dataset).cls))
     import torchvision.models as m
-    network = m.resnet34(pretrained=False)
+    # network = m.resnet34(pretrained=False)
     # network = m.resnet34(pretrained=True)
     # network.conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(3, 3), stride=1, padding=1)
-    network.maxpool  = nn.Sequential()
-    network.fc = nn.Linear(512, 100)
+    # network.maxpool  = nn.Sequential()
+    # network.fc = nn.Linear(512, 100)
     # network.load_state_dict(torch.load(str(ProjectPath.checkpoints.joinpath("Cifar100/ResNet/2022-05-16 14-17-54/best.pt"))))
+
+    from network import ResNet
+    network = ResNet.resnet34(num_class=100, tiny_image=True, torch_model=False, pretrained=False)
 
     trainer = Trainer(
         network=network, dataset=dataset, log=log, dry_run=dry_run,
