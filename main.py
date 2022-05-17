@@ -450,7 +450,7 @@ class Trainer:
                 )
 
             # adjust lr after in the plateau
-            if before_stop > 0 and ((len(last_best_epoch) > 4 and (plateau_cnt := epoch - last_best_epoch[-2]) >= plateau) or (torch.std(last_acc[-3:])) <= 0.001):
+            if before_stop > 0 and ((len(last_best_epoch) > 4 and (plateau_cnt := epoch - last_best_epoch[-2]) >= plateau)):
                 before_stop -= 1
                 early_stop_cnt = 0
                 last_best_epoch.extend([epoch] * 3)
