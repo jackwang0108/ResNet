@@ -201,8 +201,12 @@ class ResNet(nn.Module):
             # input transform
             if tiny_image:
                 self.input_transform = nn.Sequential(
-                    nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(3, 3), stride=1, padding=1),
+                    nn.Conv2d(in_channels=3, out_channels=64, kernel_size=(3, 3), stride=1, padding=1, bias=False),
                     nn.BatchNorm2d(num_features=64),
+                    nn.Conv2d(in_channels=64, out_channels=64, kernel_size=(3, 3), stride=1, padding=1, bias=False),
+                    nn.BatchNorm2d(num_features=64),
+                    # nn.Conv2d(in_channels=64, out_channels=64, kernel_size=(3, 3), stride=1, padding=1, bias=False),
+                    # nn.BatchNorm2d(num_features=64),
                     nn.ReLU(inplace=True),
                     nn.Sequential()
                 )

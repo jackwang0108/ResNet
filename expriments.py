@@ -29,18 +29,52 @@ def runs(
         base_cmd += "-tm "
     if paper_train:
         base_cmd += "-pt "
+    if pretrained:
+        base_cmd += f"-p {pretrained} "
 
-    base_cmd += f"-md {model}"
-    base_cmd += f"-bz {bsize}"
-    base_cmd += f"-ds {ds}"
-    base_cmd += f"-p {pretrained}"
-    base_cmd += f"-m \"{message}\""
+    base_cmd += f"-md {model} "
+    base_cmd += f"-bz {bsize} "
+    base_cmd += f"-ds {ds} "
+    base_cmd += f"-m \"{message}\" "
     
     os.system(f"{base_cmd}")
 
 
 if __name__ == "__main__":
-    runs(model=34, bsize=128, ds="Cifar100", message="train my resnet34 without skip", torch_model=True, skip=True, paper_train=False)
+    # for dataset in ["PascalVOC2012"]:
+    #     for model in [50, 101, 152]:
+    #         for torch_model in [False, True]:
+    #             for skip in [False]:
+    #                 for paper_train in [True]:
+    #                     runs(
+    #                         model=model, 
+    #                         bsize=128 if model != 152 else 64, 
+    #                         ds=dataset, 
+    #                         torch_model=torch_model, 
+    #                         paper_train=paper_train,
+    #                         message=f"{'paper' if paper_train else 'modern'} train "\
+    #                                 f"{'torch' if torch_model else 'my'} "\
+    #                                 f"resnet{model} with{'' if skip else 'out'} skip", 
+    #                     )
+
+    for dataset in ["Cifar10", "Cifar100"]:
+        if dataset == "Cifar10":
+            continue
+        for model in [18, 34, 50]:
+            for torch_model in [False, True]:
+                for skip in [False, True]:
+                    for paper_train in [True, False]:
+                        runs(
+                            model=model, 
+                            bsize=128, 
+                            ds=dataset, 
+                            torch_model=torch_model, 
+                            paper_train=paper_train,
+                            message=f"{'paper' if paper_train else 'modern'} train "\
+                                    f"{'torch' if torch_model else 'my'} "\
+                                    f"resnet{model} with{'' if skip else 'out'} skip", 
+                        )
+
 
     # runs(model=34, bsize=128, ds="Cifar100", message="train my resnet34 without skip")
     # runs(model=34, bsize=128, ds="Cifar100", message="train my resnet34 without skip", torch_model=True)

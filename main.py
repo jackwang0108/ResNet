@@ -10,6 +10,8 @@ Notes:
         7. 跑实验一定要用函数，不然最后无法退出
         8. 退出时候注意要用atexit，否则会由于builtin被释放导致很多函数用不了
         9. 自己写的Classification Evaluator一定要在真实环境下测试
+	    10. 最好先根据一个参数调出来了性能再进行大规模测试
+        11. 最好每个log下面给一个json的config，这样可以记录每次实验的参数，tensoboard里面也要加,免得做实验不方便看
 """
 
 
@@ -19,6 +21,7 @@ Notes:
 import os
 import re
 import time
+import math
 import atexit
 import logging
 import argparse
@@ -49,8 +52,6 @@ import torchvision.transforms as T
 
 init(autoreset=True)
 
-class _ResNetBase:
-    pass
 
 class Trainer:
     start_time: str = datetime.datetime.now().strftime("%Y-%m-%d %H-%M-%S")
@@ -65,16 +66,22 @@ class Trainer:
         T.CenterCrop(size=(224, 224)),
         T.RandomHorizontalFlip(),
         T.ColorJitter(),
-        T.RandomAffine(degrees=(0, 30), translate=(0.1, 0.3), scale=(0.6, 0.9)),
+        T.RandomAffine(degrees=30, translate=(0, 0.1), scale=(0.85, 1)),
         T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        T.Normalize(
+            [0.5070751592371323, 0.48654887331495095, 0.4409178433670343], 
+            [0.2673342858792401, 0.2564384629170883, 0.27615047132568404]
+        )
     ])
 
     test_T = T.Compose([
         T.Resize(size=(256)),
         T.CenterCrop(size=(224, 224)),
         T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        T.Normalize(
+            [0.5070751592371323, 0.48654887331495095, 0.4409178433670343], 
+            [0.2673342858792401, 0.2564384629170883, 0.27615047132568404]
+        )
     ])
 
     system = platform.system()
@@ -82,23 +89,28 @@ class Trainer:
         max_col = os.get_terminal_size().columns
     else:
         max_col = 50
+    
+    # hparam
+    milestones = [60, 120, 160]
+    gamma = 0.1
 
     def __init__(
-        self, network: _ResNetBase, dataset: str,
+        self, network: ResNet, dataset: str,
         log: Optional[bool] = True,
         dry_run: Optional[bool] = True,
         cifar: Optional[bool] = False,
         skip: Optional[bool] = False,
         log_loss_step: Optional[int] = None,
     ) -> None:
-
+        if self.avaliable_device == torch.device("cpu"):
+            print(f"{Fore.RED}No CUDA support found or failed to initialize, running with CPU")
         # save param
         self.log = log
         self.dataset: str = dataset
         self.dry_run: bool = dry_run
         self.tiny_image: bool = cifar
         self.log_loss_step: Union[None, int] = log_loss_step
-        self.network: _ResNetBase = network.to(
+        self.network: ResNet = network.to(
             self.avaliable_device, non_blocking=True)
 
         # make file suffix
@@ -110,6 +122,7 @@ class Trainer:
             self.train_T.transforms = self.train_T.transforms[2:]
             self.test_T.transforms = self.test_T.transforms[2:]
             print("Training with tiny image, skip first two transform")
+            print("Training with tiny image")
         self.train_ds = MultiDataset(dataset=self.dataset, split="train").set_transform(
             self.train_T
         )
@@ -153,7 +166,7 @@ class Trainer:
                 f"{Fore.GREEN}Save checkpoint to {self.checkpoint_path.relative_to(ProjectPath.base)}")
             self.checkpoint_path.parent.mkdir(parents=True)
         
-        self.logger.info(f"{Fore.GREEN}Training with {'tiny' if self.tiny_image else 'large'} image{', skip first two transform' if self.tiny_image else ''}")
+        self.logger.info(f"{Fore.GREEN}Training with {'tiny' if self.tiny_image and skip else 'large'} image{', skip first two transform' if self.tiny_image and skip else ''}")
 
         atexit.register(self._cleanup)
 
@@ -185,11 +198,11 @@ class Trainer:
     def modern_train(
         self, 
         bsize: Optional[int] = 32,
-        lr: Optional[float] = 1e-3,
+        lr: Optional[float] = 2e-3,
         n_epoch: Optional[int] = 100,
         early_stop: Optional[int] = 7,
         message: Optional[str] = None
-    ) -> _ResNetBase:
+    ) -> ResNet:
         # log training digest
         msg = "Start Training".center(self.max_col, "+")
         self.logger.info(f"{Fore.GREEN}" + msg)
@@ -225,8 +238,7 @@ class Trainer:
         max_top1: float = 0
         early_stop_cnt: int = 0
         ne_digits: int = len(str(n_epoch))
-        es_digits: int = len(str(early_stop))
-
+        es_digits: int = len(str(early_stop)) 
         # typing
         x: torch.Tensor
         y: torch.Tensor
@@ -316,8 +328,10 @@ class Trainer:
 
             # check early stop
             if early_stop_cnt >= early_stop:
-                self.logger.info(f"{Fore.YELLOW}Early Stopped at epoch: {epoch}!")
-                break
+                self.logger.info(f"{Fore.YELLOW}Early Stopped at epoch: {epoch}! Ignored")
+                early_stop_cnt = 0
+                # self.logger.info(f"{Fore.YELLOW}Early Stopped at epoch: {epoch}!")
+                # break
 
         return self.network
 
@@ -328,7 +342,7 @@ class Trainer:
         n_epoch: Optional[int] = 100,
         early_stop: Optional[int] = 7,
         message: Optional[str] = None
-    ) -> _ResNetBase:
+    ) -> ResNet:
         # log training digest
         msg = "Start Training".center(self.max_col, "+")
         self.logger.info(f"{Fore.GREEN}" + msg)
@@ -355,9 +369,15 @@ class Trainer:
             pin_memory=True
         )
         loss_func = nn.CrossEntropyLoss()
-        optimizer = optim.SGD(params=self.network.parameters(), lr=0.1, weight_decay=1e-4, momentum=0.9)
+        optimizer = optim.SGD(params=self.network.parameters(), lr=0.5, weight_decay=5e-4, momentum=0.9)
         self.logger.info(f"{Fore.GREEN}Optim: {optimizer.__class__.__name__}")
         optimizer.zero_grad()
+        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.milestones, gamma=self.gamma)
+        warm_up_with_multistep_lr = lambda epoch: epoch / 2 if epoch <= 2 else 0.2**len([m for m in self.milestones if m <= epoch])
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warm_up_with_multistep_lr)
+        # warm_up_with_cosine_lr = lambda epoch: epoch / 1 if epoch <= 1 else 0.5 * ( math.cos((epoch - 2) /(n_epoch - 2) * math.pi) + 1)
+        # scheduler = torch.optim.lr_scheduler.LambdaLR( optimizer, lr_lambda=warm_up_with_cosine_lr)
+
 
         # constant
         max_top1: float = 0
@@ -382,6 +402,7 @@ class Trainer:
             # setup evaluator
             train_evaluator.new_epoch()
             val_evaluator.new_epoch()
+
 
             # train
             self.network.train()
@@ -432,7 +453,7 @@ class Trainer:
                     f"{Fore.YELLOW}Dataset: {self.dataset}, Epoch: [{epoch:>{ne_digits}}|{n_epoch}], "\
                     f"new top1 Acc: {Style.BRIGHT}{new_acc[0]:>.5f}{Style.NORMAL}, with top5 Acc:{new_acc[1]:>.5f}, "\
                     f"lr: {optimizer.param_groups[0]['lr']:>.6f}, "
-                    f"Plateau: [{str(plateau_cnt):>{p_digits}s}|{plateau}]"
+                    # f"Plateau: [{str(plateau_cnt):>{p_digits}s}|{plateau}]"
                 )
                 if not self.dry_run:
                     torch.save(self.network.state_dict(), self.checkpoint_path)
@@ -447,22 +468,27 @@ class Trainer:
                     f"top1 Acc: [{new_acc[0]:>5f}|{Style.BRIGHT}{max_top1:>.5f}{Style.NORMAL}], top5 Acc: [{new_acc[1]:>.5f}|{max_top5:>.5f}], "\
                     f"early_stop_cnt: [{early_stop_cnt:>{es_digits}d}|{early_stop}], "\
                     f"lr: {optimizer.param_groups[0]['lr']:>.6f}, "
-                    f"Plateau: [{str(plateau_cnt):>{p_digits}s}|{plateau}]"
+                    # f"Plateau: [{str(plateau_cnt):>{p_digits}s}|{plateau}]"
                 )
 
             # adjust lr after in the plateau
-            if before_stop > 0 and ((len(last_best_epoch) > 4 and (plateau_cnt := epoch - last_best_epoch[-2]) >= plateau)):
-                before_stop -= 1
-                early_stop_cnt = 0
-                last_best_epoch.extend([epoch] * 3)
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] /= 10
-                self.network.load_state_dict(torch.load(self.checkpoint_path, map_location=self.avaliable_device))
-                before = optimizer.param_groups[0]["lr"] * 10
-                self.logger.info(f"{Fore.GREEN}Decrease lr at epoch: {epoch}, from {before:>.6f} to {before / 10:>.6f}, switch to best model, max top1 Acc: {max_top1}")
+            last_lr = scheduler.get_last_lr()[0]
+            scheduler.step()
+            if (current_lr := scheduler.get_last_lr()[0]) < last_lr:
+                  self.network.load_state_dict(torch.load(self.checkpoint_path, map_location=self.avaliable_device))
+                  self.logger.info(f"{Fore.YELLOW}Decrease lr at epoch: {epoch}, from {last_lr:>.6f} to {current_lr:>.6f}, switch to best model, max top1 Acc: {max_top1}, max top 5 Acc:{max_top5}")
+            # if before_stop > 0 and ((len(last_best_epoch) > 4 and (plateau_cnt := epoch - last_best_epoch[-2]) >= plateau)):
+            #     before_stop -= 1
+            #     early_stop_cnt = 0
+            #     last_best_epoch.extend([epoch] * 3)
+            #     for param_group in optimizer.param_groups:
+            #         param_group["lr"] /= 10
+            #     self.network.load_state_dict(torch.load(self.checkpoint_path, map_location=self.avaliable_device))
+            #     before = optimizer.param_groups[0]["lr"] * 10
+            #     self.logger.info(f"{Fore.GREEN}Decrease lr at epoch: {epoch}, from {before:>.6f} to {before / 10:>.6f}, switch to best model, max top1 Acc: {max_top1}")
             
-            if early_stop <= 0:
-                plateau_cnt = "NA"
+            # if early_stop <= 0:
+            #     plateau_cnt = "NA"
 
             # tensorboard
             if not self.dry_run:
@@ -478,8 +504,10 @@ class Trainer:
 
             # early stop
             if early_stop_cnt >= early_stop:
-                self.logger.info(f"{Fore.MAGENTA}Early Stopped at epoch: {epoch}")
-                break
+                self.logger.info(f"{Fore.YELLOW}Early Stopped at epoch: {epoch}! Ignored")
+                early_stop_cnt = 0
+                # self.logger.info(f"{Fore.MAGENTA}Early Stopped at epoch: {epoch}")
+                # break
 
         return self.network
 
